@@ -1,0 +1,16 @@
+# Normalize line endings: store text as LF in the repo, regardless of OS.
+* text=auto
+
+# Addon source + docs — always LF in the repo (the WoW client reads either fine).
+*.lua text eol=lf
+*.toc text eol=lf
+*.xml text eol=lf
+*.md  text eol=lf
+*.txt text eol=lf
+
+# Binary assets — never convert.
+*.ttf binary
+*.otf binary
+*.tga binary
+*.blp binary
+*.png binary
