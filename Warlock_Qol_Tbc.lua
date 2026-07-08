@@ -1,15 +1,10 @@
--- Warlock_Qol_Tbc.lua — Core logic: event handling, data management, say logic
---
--- WoW addons are event-driven. We register a frame to listen for game events
--- (spell casts, pet changes, etc.) and respond to them in an OnEvent handler.
+-- Warlock_Qol_Tbc.lua — Core: events, saved-variables/data, say logic, macros.
 
--- Global table for this addon. Other files (like the UI) access shared
--- functions through this table rather than using globals directly.
+-- Shared table; the UI file reads WQ.* from here (avoid raw globals).
 Warlock_Qol_Tbc = {}
-local WQ = Warlock_Qol_Tbc  -- local alias to keep code short
+local WQ = Warlock_Qol_Tbc
 
--- Maps each pet family to its summon spell ID. Spell IDs are stable across
--- locales, so we key off them (not localised names) for macro creation.
+-- Pet family -> summon spell ID (IDs are stable across locales; names resolved at runtime).
 local SUMMON_SPELL_IDS = {
     Imp        = 688,
     Voidwalker = 697,
@@ -19,39 +14,26 @@ local SUMMON_SPELL_IDS = {
     Felguard   = 30146,
 }
 
--- Ritual of Summoning — used to summon another player. Single spell, so it gets
--- its own constant rather than a family table.
+-- Ritual of Summoning (summons a player).
 local RITUAL_SPELL_ID = 698
 
--- Default ritual line shipped to new users and re-added by the Ritual page's Reset.
--- Kept as a named constant so first-run seeding and the Reset re-seed share one source
--- of truth. {star} is a raid-marker token that renders as the yellow star icon in chat.
+-- Default ritual line, seeded on first run / hard reset. {star} = raid marker token.
 local DEFAULT_RITUAL_LINE = "Summoning {star} {targetName} {star} to {location}. Click!"
 
--- Ritual of Souls — creates a Soul Well the group clicks for Healthstones. Like Ritual
--- of Summoning it's a single spell keyed by a stable ID (Rank 1; the spell name is shared
--- across ranks, so casting by name and the cast guard work for whatever rank is known).
--- Its line is just said in /say (no placeholders, no group requirement).
+-- Ritual of Souls. Line said in /say, no placeholders.
 local RITUAL_OF_SOULS_SPELL_ID = 29893
 local DEFAULT_SOULS_LINE = "Healthstones up — grab one! {square}"
 
--- Banish announcer defaults: one pool for a successful banish (aura landed) and one for a
--- resisted banish. Both seeded once (see InitDB) and editable on the Banish page.
+-- Banish announcer default lines: landed pool + resisted pool.
 local DEFAULT_BANISH_LINE        = "{targetName} has been banished!"
 local DEFAULT_BANISH_RESIST_LINE = "{targetName} banish resisted"
 
--- The Soulstone announcer watches the combat log for the soulstone being CAST (by ANY
--- warlock, so the whole group gets visibility) — see the handler for why we key off the
--- cast, not the buff aura. Matched by name to stay rank-agnostic; this is the enUS spell
--- name (same as the user's WeakAura) — localise here if other client locales are needed.
+-- Soulstone announce keys off the CAST, matched by name (enUS, rank-agnostic).
 local SOULSTONE_SPELL_NAME = "Soulstone Resurrection"
-local SOULSTONE_THROTTLE   = 3   -- seconds; block a rapid duplicate announce for the same target
+local SOULSTONE_THROTTLE   = 3   -- seconds; block a duplicate announce for the same target
 local DEFAULT_SOULSTONE_LINE = "A {circle} soulstone {circle} has been cast on {targetName}"
 
--- A combat-log unit counts as "in my group" if its affiliation flags include mine,
--- party or raid. We use this to ignore soulstones cast among strangers nearby — a
--- random warlock stoning a stranger shouldn't trigger our announcement. (`or 0x..`
--- fallbacks guard against the Blizzard constants not being set this early in load.)
+-- True if a combat-log unit's affiliation is mine/party/raid (ignore nearby strangers).
 local AFFILIATION_GROUP = bit.bor(
     COMBATLOG_OBJECT_AFFILIATION_MINE  or 0x1,
     COMBATLOG_OBJECT_AFFILIATION_PARTY or 0x2,
@@ -60,9 +42,7 @@ local function InMyGroup(unitFlags)
     return unitFlags ~= nil and bit.band(unitFlags, AFFILIATION_GROUP) ~= 0
 end
 
--- A combat-log unit is "mine" if its affiliation includes the MINE flag (the player). The
--- Banish announcer uses this to fire only on the player's OWN banishes, unlike the
--- soulstone announcer which fires on any group member's cast.
+-- True if a combat-log unit is the player (banish fires on my own casts only).
 local AFFILIATION_MINE = COMBATLOG_OBJECT_AFFILIATION_MINE or 0x1
 local function IsMine(unitFlags)
     return unitFlags ~= nil and bit.band(unitFlags, AFFILIATION_MINE) ~= 0
@@ -80,10 +60,7 @@ local function GetSpellTextureByID(spellID)
     return nil
 end
 
--- Banish announcer: watches the combat log for MY OWN Banish landing (SPELL_AURA_APPLIED)
--- or resisting (SPELL_MISSED / "RESIST"). Detection is by spell NAME (rank-agnostic, so it
--- matches either rank); the rank itself is read from the cast's spell ID. The name is
--- derived from a spell ID rather than hardcoded in English (see CLAUDE.md) and memoised.
+-- Banish spell name (from ID 710, memoised) for rank-agnostic combat-log matching.
 local BANISH_THROTTLE   = 3                       -- seconds; block a dup announce per target+kind
 local BANISH_RANK_BY_ID = { [710] = 1, [18647] = 2 }  -- Banish Rank 1 / Rank 2 spell IDs
 
@@ -93,9 +70,7 @@ local function BanishName()
     return banishName
 end
 
--- " (Rank N)" suffix for a cast's spell ID, always appended to a banish announcement.
--- Uses the known ID→rank map, falling back to parsing the localised rank subtext; returns
--- "" when the rank can't be determined (so nothing odd is appended).
+-- " (Rank N)" suffix for a banish spell ID (map, then GetSpellSubtext fallback; "" if unknown).
 local function BanishRankSuffix(spellID)
     local n = BANISH_RANK_BY_ID[spellID]
     if not n and GetSpellSubtext then
@@ -106,67 +81,34 @@ local function BanishRankSuffix(spellID)
     return ""
 end
 
--- Ordered list of families — used by the UI to build tabs in a consistent order.
+-- Ordered family list (UI tab order).
 WQ.PET_FAMILIES = { "Imp", "Voidwalker", "Succubus", "Incubus", "Felhunter", "Felguard" }
 
 -- ── Saved Variables / DB ──────────────────────────────────────────────────────
---
--- Warlock_Qol_Tbc_DB is declared as a SavedVariable in the .toc file (account-wide on
--- disk). WoW loads it before ADDON_LOADED fires and saves it on logout. If it
--- doesn't exist yet (first install) it is nil — InitDB creates the skeleton.
---
--- Layout (ElvUI-style named profiles):
---
---   Warlock_Qol_Tbc_DB = {
---     profiles = {                     -- SHAREABLE config, keyed by profile name
---       ["<name>"] = {
---         lines, ritualLines, soulsLines, soulstoneLines,
---         banishLines, banishResistLines,          -- the six line pools
---         petEnabled, ritualEnabled, soulsEnabled,
---         soulstoneEnabled, banishEnabled, trackerEnabled,  -- the six feature flags
---         ritualSeeded, soulsSeeded, soulstoneSeeded, banishSeeded, -- the seed-once flags
---       },
---     },
---     chars = {                        -- PER-CHARACTER, never shared
---       ["<Name-Realm>"] = {
---         profile       = "<name>",    -- which profile this character is bound to
---         masterEnabled = true,        -- per-char master override
---         setupComplete = false,       -- per-char first-run flag
---         petNames      = {},          -- per-char runtime pet-name cache
---         ownCds        = {},          -- per-char: cdKey -> wall-clock time() expiry of MY
---                                      --   own tracked cooldown (so the HUD self-row survives
---                                      --   a /reload or relog; see RestoreOwnCooldowns)
---       },
---     },
---     ui = { ... },                    -- GLOBAL window geometry (top level, unchanged)
---   }
---
--- The account-wide SavedVariable is intentional: keeping profiles in one shared
--- table is what lets a player copy config across characters. Only the `chars`
--- entries are per-character (each binds to a profile); `ui` stays global.
+-- Account-wide SavedVariable (declared in the .toc). Layout:
+--   profiles[<name>] = shareable config (six line pools, *Enabled/*Seeded flags, tracker/
+--                      consumables settings)   -- account-wide so config can be copied between chars
+--   chars[<Name-Realm>] = { profile, masterEnabled, setupComplete, petNames, ownCds }  -- per-char
+--   ui = window geometry (top-level, global)
+-- InitDB creates the skeleton on first install. See CLAUDE.md for the full field list.
 
 -- ── Profile / character resolution ────────────────────────────────────────────
---
--- The active profile and this character's state are cached in module locals and
--- (re)resolved lazily. They MUST NOT be resolved at ADDON_LOADED — UnitName/
--- GetRealmName aren't reliable until PLAYER_LOGIN — so we resolve on PLAYER_LOGIN
--- (and again on any profile switch). Every config read goes through ActiveProfile()
--- and every per-character read through CharState().
-local activeProfile          -- cached profiles[<bound name>] table for this character
-local charState              -- cached chars[<Name-Realm>] table for this character
+-- Active profile + per-char state are cached locals, resolved on PLAYER_LOGIN (UnitName isn't
+-- reliable earlier) and on profile switch. Reads go through ActiveProfile() / CharState().
+local activeProfile          -- cached profiles[<bound name>] for this character
+local charState              -- cached chars[<Name-Realm>] for this character
 
--- Forward declarations so the mutually-referencing helpers below share upvalues.
+-- Forward decls for the mutually-referencing helpers below.
 local ActiveProfile, CharState, ResolveActiveBinding, EnsureProfileSeeded
 
--- Stable per-character key. Only reliable at/after PLAYER_LOGIN; returns nil earlier
--- (callers treat nil as "can't resolve yet" and skip caching).
+-- Per-character key; nil before PLAYER_LOGIN (callers skip caching then).
 local function CharKey()
     local name = UnitName("player")
     if not name or name == "" then return nil end
     return name .. "-" .. (GetRealmName() or "")
 end
 
--- Recursive deep copy so copied profiles never share table references with the source.
+-- Deep copy (copied profiles share no table refs with the source).
 local function DeepCopy(v)
     if type(v) ~= "table" then return v end
     local out = {}
@@ -174,8 +116,7 @@ local function DeepCopy(v)
     return out
 end
 
--- Make sure a profile table has every config field (idempotent). Used when creating a
--- profile, and defensively whenever a profile is bound, so old/partial profiles heal.
+-- Ensure a profile has every config field (idempotent; heals old/partial profiles).
 local function InitProfile(p)
     p = p or {}
     if not p.lines             then p.lines             = {} end
@@ -191,14 +132,11 @@ local function InitProfile(p)
     if p.soulstoneEnabled == nil then p.soulstoneEnabled = true end
     if p.banishEnabled    == nil then p.banishEnabled    = true end
     if p.trackerEnabled   == nil then p.trackerEnabled   = true end
-    -- HUD auto-show in a raid (per-profile; raid-only feature — there is no party mode).
-    -- `trackedCds` maps a cooldown key -> false to stop tracking it; an absent key = tracked.
+    -- trackerShowRaid = auto-show HUD in raid. trackedCds[key]=false disables a cooldown (absent = tracked).
     if p.trackerShowRaid  == nil then p.trackerShowRaid  = true  end
     if not p.trackedCds   then p.trackedCds = {} end
-    -- Missing Consumables (per-profile). consumablesEnabled = master feature flag;
-    -- consumeShowRaid = auto-show the HUD when in a raid; consumeThreshold = the "about to
-    -- expire" warning window in seconds (default 120 = 2 min); trackedConsumes maps a
-    -- consumable key -> false to stop tracking it (an absent key = tracked).
+    -- Missing Consumables: consumeShowRaid = auto-show in raid; consumeThreshold = expiry warning
+    -- window (secs, default 120); trackedConsumes[key]=false disables one (absent = tracked).
     if p.consumablesEnabled == nil then p.consumablesEnabled = true end
     if p.consumeShowRaid    == nil then p.consumeShowRaid    = true end
     if p.consumeGlow        == nil then p.consumeGlow        = true end   -- glow the missing icons
@@ -211,9 +149,7 @@ local function InitProfile(p)
     return p
 end
 
--- Add the default ritual line if it isn't already present (so repeated calls
--- don't pile up copies). Returns true if it was added. Used both for the one-time
--- per-profile seed and the on-demand Ritual Reset. Operates on the ACTIVE profile.
+-- Add the default ritual line if absent (dedup-safe). Returns true if added.
 local function SeedRitualDefaultLine()
     local p = ActiveProfile()
     if not p then return false end
@@ -224,7 +160,7 @@ local function SeedRitualDefaultLine()
     return true
 end
 
--- Same idea for the Ritual of Souls default line (seed once / Reset re-seed).
+-- Same for the Ritual of Souls default line.
 local function SeedSoulsDefaultLine()
     local p = ActiveProfile()
     if not p then return false end
@@ -235,8 +171,7 @@ local function SeedSoulsDefaultLine()
     return true
 end
 
--- Same idea for the Soulstone announcer's default line. The soulstone page has no macro/Reset,
--- so this is seed-once only, but kept dedup-safe like the others for consistency.
+-- Same for the Soulstone default line (seed-once, dedup-safe).
 local function SeedSoulstoneDefaultLine()
     local p = ActiveProfile()
     if not p then return false end
@@ -247,8 +182,7 @@ local function SeedSoulstoneDefaultLine()
     return true
 end
 
--- Seed the Banish announcer's two default lines (success + resist) once. Dedup-safe per
--- pool so a re-call never piles up copies, mirroring the ritual/souls seeds.
+-- Seed the Banish default lines (landed + resisted), dedup-safe per pool.
 local function SeedBanishDefaultLines()
     local p = ActiveProfile()
     if not p then return end
@@ -262,9 +196,7 @@ local function SeedBanishDefaultLines()
     seedOne(p.banishResistLines, DEFAULT_BANISH_RESIST_LINE)
 end
 
--- Seed a profile's default lines exactly once each (mirrors old first-run seeding, now
--- per profile). Gated on per-profile *Seeded flags so a line is never re-added after the
--- user edits or deletes it. Operates on the active profile.
+-- Seed each pool's default line once per profile, gated on the *Seeded flags.
 EnsureProfileSeeded = function()
     local p = ActiveProfile()
     if not p then return end
@@ -274,9 +206,7 @@ EnsureProfileSeeded = function()
     if not p.banishSeeded then SeedBanishDefaultLines(); p.banishSeeded = true end
 end
 
--- Resolve (and cache) this character's binding: which profile it uses (activeProfile)
--- and its per-character state (charState). Safe to call repeatedly; it re-derives both
--- caches from the DB. No-op before PLAYER_LOGIN (CharKey is nil that early).
+-- Resolve + cache this character's binding (activeProfile + charState). No-op pre-PLAYER_LOGIN.
 ResolveActiveBinding = function()
     if not Warlock_Qol_Tbc_DB then return end
     local key = CharKey()
@@ -299,8 +229,7 @@ ResolveActiveBinding = function()
     if not cs.petNames  then cs.petNames = {} end
     if not cs.ownCds    then cs.ownCds   = {} end
 
-    -- Make sure the bound profile still exists (e.g. it may have been deleted while a
-    -- different character was using it); fall back to any existing profile or a fresh one.
+    -- If the bound profile was deleted, fall back to any existing profile (or a fresh one).
     if not Warlock_Qol_Tbc_DB.profiles[cs.profile] then
         local fallback
         for pname in pairs(Warlock_Qol_Tbc_DB.profiles) do fallback = pname; break end
@@ -316,9 +245,7 @@ ResolveActiveBinding = function()
     EnsureProfileSeeded()   -- seed this profile's defaults on first bind
 end
 
--- Accessors used throughout the file. Both lazily resolve the binding if a caller
--- reaches them before PLAYER_LOGIN, and return nil if that's still too early — callers
--- guard for nil (features simply stay silent until the binding is resolved).
+-- Accessors: lazily resolve the binding; return nil pre-PLAYER_LOGIN (callers nil-guard).
 ActiveProfile = function()
     if activeProfile then return activeProfile end
     ResolveActiveBinding()
@@ -331,15 +258,11 @@ CharState = function()
     return charState
 end
 
--- Public read accessors for the UI: the active profile's config (line pools + flags) and
--- this character's per-char state (petNames/setupComplete/etc). Both are nil-safe — they
--- return nil if called before the PLAYER_LOGIN binding is resolved (the UI guards for it).
+-- Public accessors for the UI (nil-safe pre-login).
 WQ.ActiveProfile = ActiveProfile
 WQ.CharState     = CharState
 
--- Runs at ADDON_LOADED: ensure the DB skeleton exists. Deliberately does NOT resolve the
--- active profile — that waits for PLAYER_LOGIN, where CharKey() is reliable (see
--- ResolveActiveBinding).
+-- ADDON_LOADED: ensure the DB skeleton exists (the binding is resolved later, at PLAYER_LOGIN).
 local function InitDB()
     if not Warlock_Qol_Tbc_DB then Warlock_Qol_Tbc_DB = {} end
     Warlock_Qol_Tbc_DB.profiles = Warlock_Qol_Tbc_DB.profiles or {}
@@ -351,7 +274,6 @@ end
 -- These are called by the UI file to modify saved data.
 
 function WQ.AddLine(family, text)
-    -- Trim leading/trailing whitespace before saving
     text = text:match("^%s*(.-)%s*$")
     if text == "" then return false end
     table.insert(ActiveProfile().lines[family], text)
@@ -359,13 +281,10 @@ function WQ.AddLine(family, text)
 end
 
 function WQ.DeleteLine(family, index)
-    -- table.remove shifts remaining entries down automatically
     table.remove(ActiveProfile().lines[family], index)
 end
 
--- Replace the line at `index` with new text (edit-in-place). Mirrors AddLine's
--- trim/empty-reject; returns false (leaving the line untouched) on empty text or a
--- bad index, so a stray edit can't blank out or misplace a line.
+-- Edit-in-place; returns false (line untouched) on empty text or bad index.
 function WQ.UpdateLine(family, index, text)
     text = text:match("^%s*(.-)%s*$")
     if text == "" then return false end
@@ -375,8 +294,7 @@ function WQ.UpdateLine(family, index, text)
     return true
 end
 
--- Ritual lines are a single flat list (no per-family split, since there's only
--- one Ritual of Summoning), so they get their own add/delete helpers.
+-- Ritual lines: a single flat list.
 function WQ.AddRitualLine(text)
     text = text:match("^%s*(.-)%s*$")
     if text == "" then return false end
@@ -482,10 +400,7 @@ end
 
 -- ── Say logic ────────────────────────────────────────────────────────────────
 
--- A feature fires only when the master switch is ON *and* that feature's own flag is ON.
--- The master switch (CharState().masterEnabled, per-character) is a quick "disable everything" override
--- that never mutates the per-feature flags, so turning it back on restores each feature to
--- its own setting. `flagKey` is the feature's DB field, e.g. "petEnabled".
+-- A feature fires only when the per-char master switch AND its own flag are on.
 local function FeatureOn(flagKey)
     local cs = CharState()
     local p  = ActiveProfile()
@@ -498,50 +413,34 @@ local function SayLine(family)
     local lines = p.lines[family]
     if not lines or #lines == 0 then return end  -- nothing configured, stay silent
 
-    -- Pick a random line from the pool for this demon
     local line = lines[math.random(#lines)]
 
-    -- {demonName} is the documented placeholder going forward (the warlock's pets are
-    -- demons). {petName} is kept as a working back-compat alias because existing players
-    -- have saved lines that still use it — both substitute to the same value.
-    -- The pet-name cache is PER-CHARACTER (CharState), populated on UNIT_PET. Until the
-    -- demon has been summoned once this session we don't know its given name, so we fall
-    -- back to the demon's FAMILY (e.g. "Succubus") rather than stripping the placeholder —
-    -- reads better than a gap, and only applies to that first pre-detection summon.
+    -- {demonName}/{petName} (alias) -> the pet's name from the per-char cache, or the family
+    -- name (e.g. "Succubus") until it's been summoned once this session.
     local demonName = (CharState() and CharState().petNames[family]) or family
     line = line:gsub("{demonName}", demonName)
     line = line:gsub("{petName}", demonName)
 
     if line ~= "" then
-        -- SendChatMessage(text, channel) — sends a chat message on your behalf.
-        -- "SAY" is the /say channel, visible to nearby players.
         SendChatMessage(line, "SAY")
     end
 end
 
--- Ritual of Summoning is a group activity (the Warlock plus two others are needed
--- to complete the summon), so its line goes to group chat for visibility: RAID when
--- in a raid, PARTY when in a party. If somehow ungrouped we fall back to SAY so the
--- line is never silently dropped.
+-- Group chat channel: RAID in a raid, PARTY in a party, else SAY.
 local function GroupChatChannel()
     if IsInRaid() then return "RAID" end
     if IsInGroup() then return "PARTY" end
     return "SAY"
 end
 
--- Where the Warlock is standing — used for the {location} placeholder so the group
--- knows where to walk for the summon. Prefer the more precise subzone (e.g. an inn or
--- flight point name) and fall back to the broader zone. Both are standard globals.
+-- {location} text: subzone if available, else zone.
 local function GetLocationText()
     local sub = GetSubZoneText()
     if sub and sub ~= "" then return sub end
     return GetZoneText() or ""
 end
 
--- Ritual of Summoning equivalent of SayLine. Picks a random ritual line and
--- substitutes the {targetName} and {location} placeholders. Each is stripped (along
--- with a trailing comma/space) if its value is unavailable, mirroring the pet-name
--- handling, so the sentence still reads naturally.
+-- Random ritual line with {targetName}/{location} filled in (or stripped if unavailable).
 local function SayRitual()
     local p = ActiveProfile()
     if not p then return end
@@ -571,11 +470,7 @@ local function SayRitual()
     end
 end
 
--- Soulstone announce. Unlike the others this is fired automatically from the combat
--- log (see the COMBAT_LOG_EVENT_UNFILTERED handler), with `targetName` = whoever
--- received the stone. Group-only by design (an announcement to /say while solo is
--- pointless), and throttled per-target so a duplicated cast event can't double-announce
--- within a few seconds.
+-- Soulstone announce (fired from the combat log). Group-only, throttled per target.
 local soulstoneRecent = {}   -- targetName -> GetTime() of the last announce
 local function SaySoulstone(targetName)
     if not FeatureOn("soulstoneEnabled") then return end
@@ -585,7 +480,7 @@ local function SaySoulstone(targetName)
     local lines = p.soulstoneLines
     if not lines or #lines == 0 then return end
 
-    -- Combat-log names can carry a "-Realm" suffix for cross-realm players; drop it.
+    -- Strip any "-Realm" suffix.
     targetName = targetName and targetName:gsub("%-.*", "")
     if not targetName or targetName == "" then return end
 
@@ -602,10 +497,8 @@ local function SaySoulstone(targetName)
     end
 end
 
--- Banish announce. Fired automatically from the combat log (see the handler) for the
--- player's OWN banishes. `resisted` picks the success vs. resist line pool; `rankSuffix`
--- (" (Rank N)") is appended to the end of whichever line is chosen. Group-only and
--- throttled per target+kind, mirroring the soulstone announcer.
+-- Banish announce (from the combat log, my own banishes). `resisted` picks the pool;
+-- `rankSuffix` is appended. Group-only, throttled per target+kind.
 local banishRecent = {}   -- "<kind>:<targetName>" -> GetTime() of the last announce
 local function SayBanish(targetName, rankSuffix, resisted)
     if not FeatureOn("banishEnabled") then return end
@@ -615,12 +508,11 @@ local function SayBanish(targetName, rankSuffix, resisted)
     local lines = resisted and p.banishResistLines or p.banishLines
     if not lines or #lines == 0 then return end
 
-    -- Combat-log names can carry a "-Realm" suffix for cross-realm players; drop it.
+    -- Strip any "-Realm" suffix.
     targetName = targetName and targetName:gsub("%-.*", "")
     if not targetName or targetName == "" then return end
 
-    -- Throttle per target AND kind, so a resist immediately followed by a successful
-    -- re-banish (or a combat-log aura re-fire on range change) doesn't double-announce.
+    -- Throttle per target+kind (avoids double-announce on re-banish / aura re-fire).
     local now = GetTime()
     local key = (resisted and "r:" or "b:") .. targetName
     local last = banishRecent[key]
@@ -652,18 +544,13 @@ end
 
 -- ── Public say + macro helpers ──────────────────────────────────────────────────
 
--- Macros we create are tagged two ways so we can recognise our own later: a
--- recognisable name prefix AND this signature inside the body. We only ever
--- edit/delete a macro that matches BOTH, so we never touch a user's own macro.
-local MACRO_PREFIX    = "WQoL "                  -- e.g. "WQoL Succubus" (fits the 16-char name limit)
--- Common to every macro body we generate ("Warlock_Qol_Tbc.SaySummonLine" and
--- "Warlock_Qol_Tbc.SayRitualLine" both contain it), so one check recognises all ours.
-local MACRO_SIGNATURE = "Warlock_Qol_Tbc.Say"
+-- Our macros are tagged two ways (name prefix + body signature); we only edit/delete a
+-- macro matching the signature, so a user's own same-named macro is never touched.
+local MACRO_PREFIX    = "WQoL "                  -- name prefix (fits the 16-char limit)
+local MACRO_SIGNATURE = "Warlock_Qol_Tbc.Say"   -- present in every generated body
 
--- Public entry point used by the summon macros. Blizzard blocks addons from
--- sending to /say automatically, so the line must run from a hardware event —
--- i.e. the macro the player clicks. If 'family' is omitted we fall back to the
--- currently active pet's family.
+-- Summon-macro entry point (must run from the clicked macro — /say needs a hardware event).
+-- `family` defaults to the active pet's family.
 function WQ.SaySummonLine(family)
     if not FeatureOn("petEnabled") then return end   -- feature (or master) off; macro still cast the pet
     family = family or (UnitExists("pet") and UnitCreatureFamily("pet")) or nil
@@ -671,30 +558,22 @@ function WQ.SaySummonLine(family)
     SayLine(family)
 end
 
--- Public entry point used by the ritual macro. No cast-timing guard: Ritual of Summoning
--- is a CHANNELLED ritual (it was changed from instant to channelled long ago), and a
--- channel's state isn't reliably readable in the macro's same-frame /run — the old
--- UnitCastingInfo guard never passed, so the line never fired (same issue as Ritual of
--- Souls). Summoning requires a targeted group member, so we guard on having a player
--- target instead: it's synchronous, reliable, and keeps {targetName} meaningful.
+-- Ritual-macro entry point. No cast guard (Ritual of Summoning is channelled; its state
+-- isn't readable in the macro's /run) — we guard on having a player target instead.
 function WQ.SayRitualLine()
     if not FeatureOn("ritualEnabled") then return end   -- feature (or master) off; macro still cast the ritual
     if not (UnitExists("target") and UnitIsPlayer("target")) then return end
     SayRitual()
 end
 
--- Entry point for the Ritual of Souls macro. Unlike the targeted Ritual of Summoning,
--- there's NO cast guard here — Ritual of Souls is a channelled ritual whose channel state
--- isn't reliably readable in the same frame as the macro's /run, so a UnitCastingInfo/
--- UnitChannelInfo guard suppressed the line entirely. It has no target and no cooldown,
--- so we just say the line when the macro fires (same as the pet-summon lines).
+-- Ritual of Souls macro entry point. No cast guard (channelled; state unreadable in /run) —
+-- no target or cooldown, so just say the line.
 function WQ.SaySoulsLine()
     if not FeatureOn("soulsEnabled") then return end   -- feature (or master) off; macro still cast the ritual
     SaySouls()
 end
 
--- True only if the macro at this index was created by us (a name match alone is
--- not enough — a user could have their own macro with the same name).
+-- True only if the macro at this index is ours (matched by body signature, not name).
 local function IsOurMacro(index)
     if not index or index <= 0 then return false end
     local _, _, body = GetMacroInfo(index)
@@ -713,9 +592,7 @@ function WQ.ReportMacroResult(created, updated, conflicts)
     end
 end
 
--- Create or update one of OUR macros (recognised by signature). Same-named
--- macros that are NOT ours are left untouched. Returns one of: "created",
--- "updated", "conflict" (name taken by someone else's macro), or "nospace".
+-- Create/update one of our macros. Returns "created"/"updated"/"conflict"/"nospace".
 local function UpsertMacro(macroName, icon, body)
     local index = GetMacroIndexByName(macroName)
     if index and index > 0 then
@@ -732,8 +609,7 @@ local function UpsertMacro(macroName, icon, body)
     return "created"
 end
 
--- Delete a macro only if it's one of ours (verified by signature). Returns true
--- if it was removed. Looked up by name, so shifting indices between calls is fine.
+-- Delete a macro only if it's ours (by signature). Returns true if removed.
 local function RemoveSignedMacro(macroName)
     local index = GetMacroIndexByName(macroName)
     if index and index > 0 and IsOurMacro(index) then
@@ -756,8 +632,7 @@ local function Tally(result, macroName, counts)
     end
 end
 
--- Create/refresh a summon macro for every pet the character can currently
--- summon. Returns created, updated, conflicts (a list of names).
+-- Create/refresh a summon macro for every pet family. Returns created, updated, conflicts.
 function WQ.CreateSummonMacros()
     if InCombatLockdown() then
         print("|cff9900ffWarlockQol|r: can't change macros in combat — try again afterwards.")
@@ -769,11 +644,8 @@ function WQ.CreateSummonMacros()
         local spellID   = SUMMON_SPELL_IDS[family]
         local spellName = spellID and GetSpellNameByID(spellID)
 
-        -- Build a macro for every pet family, even ones this character can't
-        -- summon yet (e.g. Felguard without the Demonology talent). GetSpellNameByID
-        -- reads the spell database, not the spellbook, so the name resolves regardless;
-        -- the /cast just no-ops until the spell is learned. This keeps the full set of
-        -- macros present so the user isn't confused by missing ones after a respec.
+        -- Built for every family even if unlearned (name resolves from the spell DB;
+        -- the /cast just no-ops until learned).
         if spellName and spellID then
             local macroName = MACRO_PREFIX .. family
             local body = ("#showtooltip %s\n/cast %s\n/run Warlock_Qol_Tbc.SaySummonLine(\"%s\")")
@@ -785,11 +657,8 @@ function WQ.CreateSummonMacros()
     return counts.created, counts.updated, counts.conflicts
 end
 
--- Create/refresh the single Ritual of Summoning macro.
--- The macro casts the spell then calls Warlock_Qol_Tbc.SayRitualLine() to say the line.
--- Built regardless of whether the spell is known (name resolves from the spell database;
--- the /cast no-ops until learned) so the full macro set is always present.
--- Returns created, updated, conflicts (same shape as CreateSummonMacros).
+-- Create/refresh the Ritual of Summoning macro (built even if unlearned). Returns
+-- created, updated, conflicts.
 function WQ.CreateRitualMacro()
     if InCombatLockdown() then
         print("|cff9900ffWarlockQol|r: can't change macros in combat — try again afterwards.")
@@ -830,10 +699,8 @@ function WQ.CreateSoulsMacro()
     return counts.created, counts.updated, counts.conflicts
 end
 
--- Create/refresh EVERY macro we manage in one pass (all summon families + both rituals),
--- aggregating the counts/conflicts so the UI can report a single summary. Combat-guarded
--- once here (each sub-creator is also guarded, but bailing up front avoids printing the
--- combat message three times). Returns created, updated, conflicts (same shape as the others).
+-- Create/refresh every macro in one pass (summon families + both rituals), aggregating the
+-- counts. Combat-guarded once here so the message isn't printed three times.
 function WQ.CreateAllMacros()
     if InCombatLockdown() then
         print("|cff9900ffWarlockQol|r: can't change macros in combat — try again afterwards.")
@@ -880,33 +747,20 @@ function WQ.RemoveSoulsMacro()
     return RemoveSignedMacro(MACRO_PREFIX .. "Souls") and 1 or 0
 end
 
--- Reset Macros: remove every macro we made (pet + ritual + souls). Saved lines, feature
--- toggles, and profiles are all kept. Driven by the Reset page's "Reset Macros" button.
+-- Reset Macros: remove every macro we made (lines/toggles/profiles kept).
 function WQ.ResetMacros()
     local removed = WQ.RemoveSummonMacros() + WQ.RemoveRitualMacro() + WQ.RemoveSoulsMacro()
     print(("|cff9900ffWarlockQol|r: removed %d macro(s). Your saved lines were kept."):format(removed))
 end
 
 -- ── Raid Cooldown Tracker (core: comms + roster + combat-log fallback) ─────────
---
--- Tracks each raid warlock's tracked-cooldown state so a later HUD can show who has a
--- soulstone READY vs. counting down. Hybrid model: WarlockQol users broadcast their OWN
--- real remaining time over addon comms (authoritative, survives /reload, no range limit);
--- warlocks NOT running the addon are filled in approximately from the combat log (in range
--- only) using a fixed assumed duration. A comms entry ALWAYS supersedes a combat-log guess
--- for the same person. Roster is enumerated independently (UnitClass) so every warlock gets
--- a row — shown "Ready" until we have a timer for them.
---
--- Data-driven: each tracked cooldown is one entry in TRACKED_COOLDOWNS, so adding
--- Shadowburn / Death Coil / etc. later is a data edit, not new plumbing. `castName` matches
--- the SPELL_CAST_SUCCESS combat-log spell name; `duration` is the fixed fallback used ONLY
--- for combat-log guesses (real users send their true remaining time).
---
--- The TBC 2.5.5 soulstone cooldown is a fixed 30 min (confirmed in-game), so the fallback
--- constant below IS the true duration. ⚠ STILL OPEN: a LIVE cooldown read in
--- GetOwnCooldownRemaining, so my own remaining survives a /reload (mid-cooldown) instead of
--- resetting to a full 30 min — needs the right spell/item cooldown source, verified in-game.
-local SOULSTONE_FALLBACK_CD = 1800  -- seconds (30 min) — confirmed in-game 2026-07-06
+-- Tracks each raid warlock's cooldown state for the HUD. Hybrid: addon users broadcast their
+-- own real remaining over comms (authoritative); non-users are guessed from the combat log
+-- (in range only) using a fixed duration. Comms always supersedes a combat-log guess. Roster
+-- comes from UnitClass so every warlock gets a row ("Ready" until we have a timer).
+-- Data-driven via TRACKED_COOLDOWNS; `castName` matches the combat-log spell, `duration` is
+-- the combat-log fallback only.
+local SOULSTONE_FALLBACK_CD = 1800  -- seconds (30 min); soulstone CD is a fixed 30 min
 local TRACKED_COOLDOWNS = {
     soulstone = {
         key      = "soulstone",
@@ -917,31 +771,25 @@ local TRACKED_COOLDOWNS = {
         icon     = "Interface\\Icons\\Spell_Shadow_SoulGem",  -- HUD row icon
     },
 }
--- Stable iteration order for the tracked cooldowns (one for now; keeps a fixed order for a
--- future multi-cooldown HUD). Exposed to the UI further down.
+-- Stable iteration order for tracked cooldowns.
 local TRACKED_ORDER = { "soulstone" }
 
--- Addon-message prefix (≤16 chars). Registered via C_ChatInfo.RegisterAddonMessagePrefix at
--- PLAYER_LOGIN so we can RECEIVE it. Wire format of the messages themselves:
---   "S:<cdKey>:<remaining>"  — I broadcast my own remaining seconds for one cooldown.
---   "R"                      — "send me your state"; recipients rebroadcast their cooldowns.
+-- Addon-message prefix (registered at PLAYER_LOGIN). Messages:
+--   "S:<cdKey>:<remaining>"  — broadcast my own remaining for one cooldown.
+--   "R"                      — request resync; recipients rebroadcast their cooldowns.
 local TRACKER_PREFIX = "WQoLCD"
 
--- Runtime cooldown store — NOT saved (timers are ephemeral and re-synced via comms/combat
--- log on login). Shape: cdState[cdKey][unitName] = { expires = GetTime()+remaining, source }.
--- source is "comms" (authoritative) or "combatlog" (a guess); comms is never clobbered by a guess.
+-- Runtime store (NOT saved): cdState[cdKey][name] = { expires, source="comms"|"combatlog" }.
+-- comms is authoritative and never clobbered by a combatlog guess.
 local cdState = {}
 for _, key in ipairs(TRACKED_ORDER) do cdState[key] = {} end
 
--- Combat-log and comms names can carry a "-Realm" suffix for cross-realm players; drop it so
--- every code path keys the store on the bare character name.
+-- Drop any "-Realm" suffix so the store keys on the bare name.
 local function StripRealm(name)
     return name and name:gsub("%-.*", "") or name
 end
 
--- Enumerate every WARLOCK in the current group (raid or party), including the player. Returns
--- an array of { name = <bare name>, unit = <unitId>, isPlayer = <bool> }. Independent of
--- comms/combat log so every warlock gets a row regardless of whether we have a timer for them.
+-- Every WARLOCK in the raid (or just the player when not in one). Returns { name, unit, isPlayer } entries.
 local function RaidWarlocks()
     local out = {}
     if IsInRaid() then
@@ -955,8 +803,7 @@ local function RaidWarlocks()
             end
         end
     else
-        -- Not in a raid: this is a raid-only feature, so we show only the player (used by the
-        -- config-page preview to position the HUD). Party members are intentionally ignored.
+        -- Raid-only feature: when not in a raid, show only the player.
         local _, myClass = UnitClass("player")
         if myClass == "WARLOCK" then
             out[#out + 1] = { name = StripRealm(UnitName("player")), unit = "player", isPlayer = true }
@@ -965,9 +812,8 @@ local function RaidWarlocks()
     return out
 end
 
--- Record a cooldown timer for a unit. `source` = "comms" (authoritative, a WarlockQol user's
--- real remaining time) or "combatlog" (an approximate guess). A comms entry supersedes a guess
--- and is never overwritten by one; a comms "remaining <= 0" clears the timer (ready now).
+-- Record a cooldown timer. source "comms" (authoritative) supersedes "combatlog" (guess) and
+-- is never overwritten by one; comms remaining <= 0 clears the timer.
 local function SetCooldown(cdKey, unitName, remaining, source)
     unitName = StripRealm(unitName)
     if not unitName or unitName == "" then return end
@@ -996,18 +842,13 @@ local function GetCooldownRemaining(cdKey, unitName)
     return rem
 end
 
--- Read the player's OWN remaining cooldown for a tracked spell. This is the single seam where
--- the accurate broadcast is produced. Stage 1 returns the fixed fallback duration; swap in a
--- live read here once the exact soulstone cooldown source is confirmed in-game, e.g.:
---   local start, dur = GetSpellCooldown(spec.spellId)          -- Create Soulstone spell, or
---   local start, dur = GetItemCooldown(<Master Soulstone item>) -- the item cooldown
---   if start and start > 0 and dur and dur > 0 then return (start + dur) - GetTime() end
+-- The player's OWN remaining for a tracked spell (the seam that produces the broadcast).
+-- Returns the fixed fallback duration; a live cooldown read could replace it later.
 local function GetOwnCooldownRemaining(spec)
     return spec.duration   -- ⚠ placeholder until the live cooldown read is verified in-game
 end
 
--- Which channel to broadcast on. Raid-only feature, so comms go over RAID only; nil otherwise
--- (party/solo) means we simply don't send — nothing is displayed outside a raid anyway.
+-- Broadcast channel: RAID only (raid-only feature); nil (party/solo) = don't send.
 local function TrackerChannel()
     if IsInRaid() then return "RAID" end
     return nil
@@ -1023,8 +864,7 @@ local function SendTracker(msg)
     end
 end
 
--- Broadcast my current remaining time for one cooldown (read from my own store so a reply to a
--- late-joiner's request reflects elapsed time, not the full duration). Sends only if running.
+-- Broadcast my remaining time for one cooldown (from my store, so it reflects elapsed time).
 local function BroadcastCooldown(cdKey)
     local rem = GetCooldownRemaining(cdKey, UnitName("player"))
     if rem > 0 then SendTracker(("S:%s:%d"):format(cdKey, math.floor(rem))) end
@@ -1034,14 +874,12 @@ local function BroadcastAllCooldowns()
     for _, key in ipairs(TRACKED_ORDER) do BroadcastCooldown(key) end
 end
 
--- Whether the tracker is active for this character (master switch + per-profile flag), routed
--- through the same FeatureOn helper the announcers use.
+-- Tracker active for this character (master switch + per-profile flag).
 local function TrackerActive()
     return FeatureOn("trackerEnabled")
 end
 
--- Whether a specific tracked cooldown is enabled for tracking (per-profile `trackedCds`).
--- Absent key = tracked (default on); only an explicit false turns it off.
+-- Whether a cooldown is tracked (per-profile trackedCds; absent = tracked, only false disables).
 local function IsCdTracked(cdKey)
     local p = ActiveProfile()
     if not p then return false end
@@ -1049,8 +887,7 @@ local function IsCdTracked(cdKey)
     return not t or t[cdKey] ~= false
 end
 
--- Ask everyone to rebroadcast their cooldowns so a late joiner catches up. Throttled because
--- GROUP_ROSTER_UPDATE fires rapidly while a raid is forming.
+-- Ask everyone to rebroadcast (late-joiner catch-up). Throttled (GROUP_ROSTER_UPDATE spams).
 local lastSyncRequest = 0
 local function RequestTrackerSync()
     if not TrackerActive() then return end
@@ -1060,8 +897,7 @@ local function RequestTrackerSync()
     SendTracker("R")
 end
 
--- Handle an incoming tracker message. Our own broadcasts are echoed back to us — ignore them
--- (we're the source of truth for ourselves). Malformed messages are dropped silently.
+-- Handle an incoming tracker message (ignore our own echo; drop malformed).
 local function OnTrackerMessage(msg, sender)
     sender = StripRealm(sender)
     if not sender or sender == "" then return end
@@ -1078,10 +914,7 @@ local function OnTrackerMessage(msg, sender)
     end
 end
 
--- Persist MY own cooldown's expiry as a WALL-CLOCK time() timestamp (per-character, saved). The
--- runtime cdState uses GetTime() (client uptime) which is wiped on /reload and reset on relog;
--- time() is real-world seconds, so a saved expiry stays meaningful across both. remaining <= 0
--- clears the saved entry.
+-- Persist my own cooldown expiry as a wall-clock time() stamp (survives /reload, unlike GetTime).
 local function PersistOwnCooldown(cdKey, remaining)
     local cs = CharState()
     if not cs then return end
@@ -1093,9 +926,7 @@ local function PersistOwnCooldown(cdKey, remaining)
     end
 end
 
--- On login/reload, re-seed MY own cooldown timers from the saved wall-clock expiries. Needed
--- because cdState is wiped on reload and nobody rebroadcasts our own cooldown back to us — so
--- without this the self-row falsely resets to "Ready". Expired entries are dropped.
+-- On login, re-seed my own timers from the saved expiries (cdState is wiped on reload). Drops expired.
 local function RestoreOwnCooldowns()
     local cs = CharState()
     if not cs or not cs.ownCds then return end
@@ -1110,11 +941,8 @@ local function RestoreOwnCooldowns()
     end
 end
 
--- Combat-log hook for a tracked-spell cast. If it's MY cast, record my own authoritative timer
--- (via the GetOwnCooldownRemaining seam), persist it for reload survival, and broadcast it;
--- otherwise, for another group member's cast, record an approximate combat-log guess (which
--- SetCooldown will not let overwrite an existing comms entry — a WarlockQol user's broadcast
--- always wins).
+-- Combat-log hook for a tracked cast. Mine: record/persist/broadcast my own timer. Someone
+-- else's: record a combat-log guess (won't overwrite a comms entry).
 local function OnTrackedCast(cdKey, sourceName, sourceFlags)
     if not TrackerActive() then return end
     if not IsCdTracked(cdKey) then return end   -- this cooldown's tracking is toggled off
@@ -1131,13 +959,10 @@ local function OnTrackedCast(cdKey, sourceName, sourceFlags)
     if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
 end
 
--- ── Missing Consumables (Stage A: detection core) ──────────────────────────────
--- A purely LOCAL feature (no comms, no announce): scans the PLAYER's own buffs + main-hand
--- weapon enchant and reports which raid consumables are MISSING or about to EXPIRE, feeding a
--- small HUD (Stage B). Data-driven like TRACKED_COOLDOWNS, so adding a consumable is a data
--- edit. Detection is by buff NAME, not spell id — a deliberate exception to the addon's
--- "ids not names" rule: "Well Fed" has dozens of per-food spell ids but one stable name, and
--- the reference WeakAura matches by name too. (Assumes an enUS client, which the user runs.)
+-- ── Missing Consumables (detection core) ──────────────────────────────────────
+-- LOCAL only (no comms/announce): scans the player's buffs + main-hand enchant for MISSING or
+-- soon-to-EXPIRE raid consumables, feeding the HUD. Data-driven. Detection is by buff NAME
+-- (deliberate exception to "ids not names": "Well Fed" has one stable name; assumes enUS).
 local CONSUMABLES = {
     flask = {
         label = "Flask",
@@ -1157,16 +982,15 @@ local CONSUMABLES = {
         auras = { "Well Fed" },
     },
 }
--- Stable display order (matches the reference WA: flask, oil, food).
+-- Stable display order.
 local CONSUMABLE_ORDER = { "flask", "oil", "food" }
 
--- Feature active for this character? Master switch + per-profile flag, via the shared helper.
+-- Feature active for this character (master switch + per-profile flag).
 local function ConsumablesActive()
     return FeatureOn("consumablesEnabled")
 end
 
--- Whether a specific consumable is tracked (per-profile `trackedConsumes`). Absent key =
--- tracked (default on); only an explicit false turns it off. Mirrors IsCdTracked.
+-- Whether a consumable is tracked (per-profile trackedConsumes; absent = tracked, only false disables).
 local function IsConsumeTracked(key)
     local p = ActiveProfile()
     if not p then return false end
@@ -1182,14 +1006,12 @@ local function ConsumeThreshold()
     return v
 end
 
--- Scan the player's current HELPFUL auras + main-hand weapon enchant. Returns a map keyed by
--- consumable key -> { present = bool, remaining = seconds (0 when present with no readable timer) }.
+-- Scan the player's HELPFUL auras + main-hand enchant. Returns key -> { present, remaining }.
 local function ScanConsumables()
     local out = {}
     for _, key in ipairs(CONSUMABLE_ORDER) do out[key] = { present = false, remaining = 0 } end
 
-    -- Player buffs: match each buff NAME against the aura-kind consumables. UnitAura returns
-    -- name(1) … duration(5), expirationTime(6); expirationTime is an absolute GetTime() stamp.
+    -- Match each buff NAME against the aura-kind consumables (expirationTime is a GetTime() stamp).
     local i = 1
     while true do
         local name, _, _, _, _, expiration = UnitAura("player", i, "HELPFUL")
@@ -1223,66 +1045,39 @@ local function ScanConsumables()
 end
 
 -- ── Event frame ───────────────────────────────────────────────────────────────
---
--- In WoW, only Frame objects can register for and receive events.
--- We create an invisible frame purely to act as an event listener.
-
 local eventFrame = CreateFrame("Frame")
 
--- Forward declaration: the OnEvent handler below (PLAYER_LOGIN) calls this, but it's
--- defined further down — declare it here so the closure captures it as an upvalue. Drives
--- the shared combat-log listener used by both the soulstone and banish announcers.
-local UpdateCombatLogRegistration
--- Same forward-declaration for the Raid CD Tracker's own listeners (comms + roster). Defined
--- after the OnEvent handler so it can capture `eventFrame`.
-local UpdateTrackerRegistration
+-- Forward decls (defined below the OnEvent handler, which calls them).
+local UpdateCombatLogRegistration   -- shared combat-log listener (soulstone + banish)
+local UpdateTrackerRegistration     -- Raid CD Tracker listeners (comms + roster)
 
--- RegisterEvent tells WoW to call this frame's OnEvent script when the
--- named event fires anywhere in the game.
-eventFrame:RegisterEvent("ADDON_LOADED")           -- fires when any addon finishes loading
-eventFrame:RegisterEvent("PLAYER_LOGIN")           -- fires once after the UI (incl. chat) is ready
-eventFrame:RegisterEvent("UNIT_PET")               -- fires when the player's active pet changes
+eventFrame:RegisterEvent("ADDON_LOADED")           -- an addon finished loading
+eventFrame:RegisterEvent("PLAYER_LOGIN")           -- UI (incl. chat) ready
+eventFrame:RegisterEvent("UNIT_PET")               -- active pet changed
 
 eventFrame:SetScript("OnEvent", function(self, event, ...)
-    -- All registered events share this one handler; we branch on 'event'.
-
     if event == "ADDON_LOADED" then
         -- ADDON_LOADED fires for every addon, so check it's ours before acting.
         local name = ...
         if name == "Warlock_Qol_Tbc" then
-            -- DB must be ready as early as possible (UI and casts may need it),
-            -- so initialise it here on ADDON_LOADED.
-            InitDB()
+            InitDB()   -- init the DB early (UI/casts may need it)
         end
 
     elseif event == "PLAYER_LOGIN" then
-        -- Print the load message here rather than on ADDON_LOADED: the chat
-        -- frame isn't reliably ready that early, so messages can be dropped.
-        -- Pull the version straight from the .toc so we only bump it in one
-        -- place. C_AddOns.GetAddOnMetadata is the modern call; the bare
-        -- global is the fallback for older clients.
+        -- Load message (printed here, not ADDON_LOADED, once chat is ready). Version from the .toc.
         local getMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
         local version = getMeta and getMeta("Warlock_Qol_Tbc", "Version") or "?"
-        -- |cRRGGBB....|r is WoW's colour markup syntax for chat/print
         print(("|cff9900ffWarlockQol|r v%s loaded successfully. Type |cffffd700/wq|r to open the menu."):format(version))
 
-        -- PLAYER_LOGIN is the first point UnitName/GetRealmName are reliable, so this is
-        -- where we resolve (and cache) this character's profile binding. Everything that
-        -- reads ActiveProfile()/CharState() is safe from here on.
+        -- First reliable point for UnitName/realm — resolve this character's profile binding.
         ResolveActiveBinding()
 
-        -- First run: show the one-page setup wizard (intro + Create Macros) so the player
-        -- sees what's available and can build their macros. We never create them silently.
-        -- setupComplete is per-character (a fresh alt should still see the wizard once) and
-        -- is set when the wizard is DISMISSED (its OnHide), NOT here — so a /reload before the
-        -- player finishes still re-shows it. Fall back to opening the hub directly if the
-        -- wizard somehow isn't available.
+        -- First run: show the setup wizard (per-char setupComplete gates it; the wizard sets the
+        -- flag on dismiss, not here). Fall back to the hub if the wizard is unavailable.
         local cs = CharState()
         if cs and not cs.setupComplete then
             if WQ.ShowWizard then
-                -- Defer one tick so the wizard opens AFTER the login event chain settles —
-                -- frames shown mid-login can get swept closed (CloseSpecialWindows). Re-check
-                -- the flag at fire time in case setup was completed in between.
+                -- Defer one tick (frames shown mid-login can be swept closed); re-check the flag.
                 if C_Timer and C_Timer.After then
                     C_Timer.After(0, function()
                         local c2 = CharState()
@@ -1300,80 +1095,51 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- Start listening on the combat log if either announcer (soulstone / banish) is on.
         UpdateCombatLogRegistration()
 
-        -- Raid CD Tracker: register our comms prefix so we can RECEIVE broadcasts, sync the
-        -- tracker's own listeners (comms + roster) to the enabled flag, and ask the group for
-        -- their current cooldown state so we start populated (no-op when solo).
+        -- Raid CD Tracker: register comms prefix, re-seed my own timers before syncing (survives a
+        -- mid-cooldown reload), sync listeners, request a state sync.
         if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
             C_ChatInfo.RegisterAddonMessagePrefix(TRACKER_PREFIX)
         end
-        -- Re-seed my own cooldown timers from saved wall-clock expiries BEFORE registering /
-        -- syncing, so a /reload or relog mid-cooldown keeps my self-row (and I rebroadcast the
-        -- correct remaining time if someone requests a sync).
         RestoreOwnCooldowns()
         UpdateTrackerRegistration()
         RequestTrackerSync()
 
-        -- Restore the tracker HUD's saved position + shown state now the DB is ready (the UI
-        -- file defines this; it's a standalone frame, independent of the /wq config window).
+        -- Restore the standalone HUDs (defined in the UI file) + position the minimap button.
         if WQ.InitTrackerHUD then WQ.InitTrackerHUD() end
 
-        -- Same for the Missing Consumables HUD: restore its position, start its scan driver if
-        -- the feature is on, and apply visibility for the current context.
         if WQ.InitConsumablesHUD then WQ.InitConsumablesHUD() end
 
-        -- Position/show the minimap button now the per-character angle + hidden flag are known.
         if WQ.InitMinimap then WQ.InitMinimap() end
 
     elseif event == "UNIT_PET" then
-        -- Fires whenever the player's pet slot changes (summon, dismiss, death).
         local unit = ...
         if unit ~= "player" then return end
-        if not UnitExists("pet") then return end  -- pet was dismissed/died, not summoned
+        if not UnitExists("pet") then return end  -- pet dismissed/died, not summoned
 
-        -- UnitCreatureFamily returns the family string e.g. "Succubus"
-        -- UnitName returns the individual pet's name e.g. "Kalneth"
-        -- Both are reliable once UNIT_PET has fired and UnitExists is true.
+        -- family e.g. "Succubus", name e.g. "Kalneth" (both reliable after UNIT_PET fires).
         local family = UnitCreatureFamily("pet")
         local name   = UnitName("pet")
 
         if family and name then
-            -- Persist the name — it's static per character so this only really
-            -- needs to happen once per pet type, but updating each time is harmless.
-            -- The cache is per-character (each toon has its own named demons).
+            -- Cache the name (per-character; each toon names its own demons).
             local cs = CharState()
             if cs then cs.petNames[family] = name end
-            -- If the config UI is open, refresh it so the detected name appears
-            if WQ.RefreshUI then WQ.RefreshUI() end
+            if WQ.RefreshUI then WQ.RefreshUI() end   -- refresh the config UI if open
         end
 
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
-        -- This event is only registered while the soulstone or banish announcer is enabled
-        -- (see UpdateCombatLogRegistration), so it carries no cost when both are off.
-        --
-        -- We key off the soulstone being CAST (SPELL_CAST_SUCCESS), NOT the buff aura.
-        -- Aura events (SPELL_AURA_APPLIED/REMOVED) are reported from what the client can
-        -- currently see, so the combat log re-fires them whenever a buffed unit moves in/
-        -- out of range or after a desync — which made the same soulstone re-announce
-        -- repeatedly. A cast event fires exactly once, when a warlock actually casts it.
-        --
-        -- Only announce when it involves MY group — the caster OR the recipient is in my
-        -- party/raid (or is me) — so a stranger nearby stoning a stranger is ignored.
-        -- sourceFlags = arg 6, destName = arg 9, destFlags = arg 10. We also pull spellId
-        -- (arg 12, for the banish rank) and the SPELL_MISSED missType (arg 15).
+        -- Registered only while an announcer is on. Soulstone keys off the CAST (SPELL_CAST_SUCCESS
+        -- fires once; aura events re-fire on range/desync) and only when it involves my group.
+        -- Args: sourceFlags(6), destName(9), destFlags(10), spellId(12), missType(15).
         local _, subevent, _, _, sourceName, sourceFlags, _, _, destName, destFlags, _, spellId, spellName, _, missType = CombatLogGetCurrentEventInfo()
         if subevent == "SPELL_CAST_SUCCESS" and spellName == SOULSTONE_SPELL_NAME then
             if InMyGroup(sourceFlags) or InMyGroup(destFlags) then
                 SaySoulstone(destName)
             end
-            -- Feed the Raid CD Tracker: attribute the cast to its caster and start a timer
-            -- (my own cast broadcasts my real cooldown; a group member's is an approx guess).
+            -- Feed the Raid CD Tracker (my cast broadcasts real time; a group member's is a guess).
             OnTrackedCast("soulstone", sourceName, sourceFlags)
         elseif spellName == BanishName() and IsMine(sourceFlags) then
-            -- The Banish announcer fires only on MY OWN banishes (not other warlocks'),
-            -- announcing when the banish lands or when it's resisted. Each path appends the
-            -- cast's rank. (Unlike soulstone we key off the aura landing, since "banished!"
-            -- should only fire when it actually sticks — see SayBanish for the throttle that
-            -- guards against the combat log re-firing the aura on range changes.)
+            -- Fires only on MY banishes: landed (aura applied) or resisted. Rank appended.
             if subevent == "SPELL_AURA_APPLIED" then
                 SayBanish(destName, BanishRankSuffix(spellId), false)
             elseif subevent == "SPELL_MISSED" and missType == "RESIST" then
@@ -1382,34 +1148,25 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
 
     elseif event == "CHAT_MSG_ADDON" then
-        -- Registered only while the tracker is active (see UpdateTrackerRegistration). Filter
-        -- to our prefix; args are prefix, message, channel, sender.
+        -- Registered only while the tracker is active. Filter to our prefix.
         local prefix, message, _, sender = ...
         if prefix == TRACKER_PREFIX then
             OnTrackerMessage(message, sender)
         end
 
     elseif event == "GROUP_ROSTER_UPDATE" then
-        -- Roster changed (someone joined/left). Ask for a fresh sync so a late joiner catches
-        -- up (throttled inside RequestTrackerSync). Re-evaluate HUD visibility (raid↔party↔solo
-        -- can change whether it shows) and refresh its rows.
+        -- Roster changed: request a sync, re-evaluate HUD visibility, refresh rows.
         RequestTrackerSync()
         if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
         if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
     end
 end)
 
--- Register/unregister the shared combat-log event to match the enabled flags. Both the
--- soulstone and banish announcers listen on COMBAT_LOG_EVENT_UNFILTERED, so we keep it
--- registered while EITHER is on and drop it (zero per-event overhead in raids) only when
--- both are off. (Forward-declared above.)
+-- Keep the shared combat-log event registered while master is on AND any of soulstone / banish /
+-- tracker is on (the tracker's fallback rides this listener too); drop it otherwise.
 UpdateCombatLogRegistration = function()
-    -- Master off drops the listener entirely (no cost while everything is disabled).
-    -- masterEnabled is per-character (CharState); the two announcer flags are per-profile.
     local cs = CharState()
     local p  = ActiveProfile()
-    -- The tracker's combat-log FALLBACK (attributing others' soulstone casts) also rides this
-    -- listener, so keep it registered while the tracker is on too — not just the announcers.
     local want = cs and cs.masterEnabled and p
                  and (p.soulstoneEnabled or p.banishEnabled or p.trackerEnabled)
     if want then
@@ -1419,10 +1176,8 @@ UpdateCombatLogRegistration = function()
     end
 end
 
--- Register/unregister the Raid CD Tracker's OWN events (comms receive + roster changes) to
--- match its enabled state, so a disabled tracker costs nothing. The combat-log fallback is
--- handled separately by UpdateCombatLogRegistration (shared with the announcers). (Assigned to
--- the forward-declared upvalue so the OnEvent handler and setters can call it.)
+-- Register/unregister the tracker's OWN events (comms receive + roster) to match its enabled
+-- state. The combat-log fallback is handled separately by UpdateCombatLogRegistration.
 UpdateTrackerRegistration = function()
     if TrackerActive() then
         eventFrame:RegisterEvent("CHAT_MSG_ADDON")
@@ -1433,16 +1188,13 @@ UpdateTrackerRegistration = function()
     end
 end
 
--- The five per-feature flags now live on the ACTIVE PROFILE (shareable config), so their
--- getters/setters read/write ActiveProfile(). The master switch is PER-CHARACTER, so it
--- reads/writes CharState().
+-- Per-feature flags live on the active profile; the master switch is per-character (CharState).
 function WQ.IsSoulstoneEnabled()
     local p = ActiveProfile()
     return p and p.soulstoneEnabled or false
 end
 
--- Toggle the soulstone announcer on/off (driven by the page's checkbox). Persists the
--- choice and updates event registration immediately.
+-- Toggle the soulstone announcer; persists + updates event registration.
 function WQ.SetSoulstoneEnabled(on)
     local p = ActiveProfile()
     if p then p.soulstoneEnabled = on and true or false end
@@ -1461,9 +1213,7 @@ function WQ.SetBanishEnabled(on)
     UpdateCombatLogRegistration()
 end
 
--- Enable getters/setters for the three macro-based features. Unlike the soulstone
--- announcer these own no event, so the setter only needs to persist the flag — the
--- guard in each WQ.Say*Line entry point reads it the next time the macro fires.
+-- Macro-feature flags: no event, so the setter just persists (the Say*Line guard reads it).
 function WQ.IsPetEnabled()    local p = ActiveProfile(); return p and p.petEnabled    or false end
 function WQ.SetPetEnabled(on)    local p = ActiveProfile(); if p then p.petEnabled    = on and true or false end end
 
@@ -1473,31 +1223,25 @@ function WQ.SetRitualEnabled(on) local p = ActiveProfile(); if p then p.ritualEn
 function WQ.IsSoulsEnabled()  local p = ActiveProfile(); return p and p.soulsEnabled  or false end
 function WQ.SetSoulsEnabled(on)  local p = ActiveProfile(); if p then p.soulsEnabled  = on and true or false end end
 
--- Master switch getter/setter. Per-character (CharState). Off silences every feature at
--- once without touching the per-feature flags; the setter also (un)registers the combat-log
--- listener so a fully disabled addon costs nothing. See FeatureOn / UpdateCombatLogRegistration.
+-- Master switch (per-character). Off silences everything without touching per-feature flags;
+-- the setter also drops the combat-log + tracker listeners and re-evaluates both HUDs.
 function WQ.IsMasterEnabled() local cs = CharState(); return cs and cs.masterEnabled or false end
 function WQ.SetMasterEnabled(on)
     local cs = CharState()
     if cs then cs.masterEnabled = on and true or false end
     UpdateCombatLogRegistration()
-    UpdateTrackerRegistration()   -- master off also drops the tracker's comms/roster listeners
-    -- Re-evaluate both standalone HUDs so they hide/show with the master switch (defensive: the
-    -- UI file defines these; nil pre-login). Also stop/start the consumables scan driver.
+    UpdateTrackerRegistration()
     if WQ.UpdateTrackerHUDVisibility     then WQ.UpdateTrackerHUDVisibility()     end
     if WQ.UpdateConsumablesRegistration  then WQ.UpdateConsumablesRegistration()  end
     if WQ.UpdateConsumablesHUDVisibility then WQ.UpdateConsumablesHUDVisibility() end
 end
 
 -- ── Raid CD Tracker public API ────────────────────────────────────────────────
--- Used by the (Stage 2/3) HUD + config page; exposed now so Stage 1 can be exercised
--- in-game. The tracked-cooldown table + order are shared read-only for the UI to build rows.
+-- The tracked-cooldown table + order are exposed read-only for the UI to build rows.
 WQ.TRACKED_COOLDOWNS = TRACKED_COOLDOWNS
 WQ.TRACKED_ORDER     = TRACKED_ORDER
 
--- Enabled getter/setter (per-profile flag, like the announcers). The setter re-syncs the
--- combat-log fallback listener AND the tracker's own comms/roster listeners, then requests a
--- fresh sync so turning it on immediately catches up on the group's state.
+-- Enabled flag (per-profile). Setter re-syncs listeners and requests a fresh state sync.
 function WQ.IsTrackerEnabled() local p = ActiveProfile(); return p and p.trackerEnabled or false end
 function WQ.SetTrackerEnabled(on)
     local p = ActiveProfile()
@@ -1508,17 +1252,14 @@ function WQ.SetTrackerEnabled(on)
     if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
 end
 
--- Per-profile "auto-show the HUD in a raid" flag. Toggling it re-evaluates whether the HUD
--- should currently be shown (the UI owns that logic via UpdateTrackerHUDVisibility). This is a
--- raid-only feature — there is no party equivalent.
+-- Per-profile "auto-show HUD in raid" flag (raid-only). Re-evaluates HUD visibility.
 function WQ.IsTrackerShowRaid()  local p = ActiveProfile(); return p and p.trackerShowRaid  or false end
 function WQ.SetTrackerShowRaid(on)
     local p = ActiveProfile(); if p then p.trackerShowRaid = on and true or false end
     if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
 end
 
--- Per-cooldown tracking toggle (data-driven; soulstone is the only one for now). Off stops the
--- combat-log/comms recording for that cooldown (see IsCdTracked in OnTrackedCast).
+-- Per-cooldown tracking toggle. Off stops recording that cooldown.
 function WQ.IsCooldownTracked(cdKey) return IsCdTracked(cdKey) end
 function WQ.SetCooldownTracked(cdKey, on)
     local p = ActiveProfile(); if not p then return end
@@ -1527,14 +1268,12 @@ function WQ.SetCooldownTracked(cdKey, on)
     if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
 end
 
--- Cheap single-lookup remaining-seconds getter (reads only the store, no roster scan) — the
--- HUD's per-frame tick uses this so it doesn't rebuild the roster every frame. 0 = ready/unknown.
+-- Cheap store-only remaining getter (HUD's per-frame tick uses this). 0 = ready/unknown.
 function WQ.GetTrackerRemaining(cdKey, unitName)
     return GetCooldownRemaining(cdKey, unitName)
 end
 
--- Snapshot the roster + each warlock's remaining time per tracked cooldown, for the HUD.
--- Returns an array of { name, isPlayer, cds = { [cdKey] = remainingSeconds (0 = ready) } }.
+-- Snapshot for the HUD: { name, isPlayer, cds = { [cdKey] = remaining (0 = ready) } } per warlock.
 function WQ.GetTrackerSnapshot()
     local rows = {}
     for _, wl in ipairs(RaidWarlocks()) do
@@ -1544,8 +1283,7 @@ function WQ.GetTrackerSnapshot()
         end
         rows[#rows + 1] = { name = wl.name, isPlayer = wl.isPlayer, cds = cds }
     end
-    -- Always list the player (whoever is running the addon) first, then everyone else by name.
-    -- So each addon user sees their own row pinned at the top of their HUD.
+    -- Player first, then everyone else alphabetically (self-row pinned to the top).
     table.sort(rows, function(a, b)
         if a.isPlayer ~= b.isPlayer then return a.isPlayer end
         return a.name < b.name
@@ -1553,9 +1291,7 @@ function WQ.GetTrackerSnapshot()
     return rows
 end
 
--- Stage-1 debug dump — no HUD yet, so call this in-game to verify the plumbing:
---   /dump Warlock_Qol_Tbc.DebugDumpCooldowns()   (or /run ...)
--- Prints whether the tracker is active and each grouped warlock's per-cooldown state.
+-- Debug dump (/run Warlock_Qol_Tbc.DebugDumpCooldowns()): tracker state + each warlock's cooldowns.
 function WQ.DebugDumpCooldowns()
     print(("|cff9900ffWarlockQol|r Tracker — active: %s"):format(TrackerActive() and "yes" or "no"))
     local snap = WQ.GetTrackerSnapshot()
@@ -1571,13 +1307,11 @@ function WQ.DebugDumpCooldowns()
 end
 
 -- ── Missing Consumables public API ─────────────────────────────────────────────
--- Used by the (Stage B) HUD + (Stage C) config page; exposed now so Stage A can be exercised
--- in-game. The data table + order are shared read-only for the UI to build the icon strip.
+-- The data table + order are exposed read-only for the UI to build the icon strip.
 WQ.CONSUMABLES      = CONSUMABLES
 WQ.CONSUMABLE_ORDER = CONSUMABLE_ORDER
 
--- Enabled getter/setter (per-profile flag, like the tracker). The HUD hooks (defined in the UI
--- file, Stage B) are called defensively — nil until then.
+-- Enabled flag (per-profile). HUD hooks are called defensively (nil pre-UI).
 function WQ.IsConsumablesEnabled() local p = ActiveProfile(); return p and p.consumablesEnabled or false end
 function WQ.SetConsumablesEnabled(on)
     local p = ActiveProfile()
@@ -1593,8 +1327,7 @@ function WQ.SetConsumeShowRaid(on)
     if WQ.UpdateConsumablesHUDVisibility then WQ.UpdateConsumablesHUDVisibility() end
 end
 
--- Per-profile "glow the missing icons" flag. Off = plain (non-flashing) icons for anyone who
--- finds the proc glow too aggressive; the icon still appears (a missing icon with no countdown).
+-- Per-profile "glow missing icons" flag. Off = plain icons (still shown, no glow).
 function WQ.IsConsumeGlow() local p = ActiveProfile(); return p and p.consumeGlow or false end
 function WQ.SetConsumeGlow(on)
     local p = ActiveProfile(); if p then p.consumeGlow = on and true or false end
@@ -1623,13 +1356,9 @@ end
 
 function WQ.IsConsumablesActive() return ConsumablesActive() end
 
--- Snapshot the tracked consumables for the HUD/debug. Returns an ordered array (CONSUMABLE_ORDER)
--- of { key, label, icon, present, remaining, status } where status is:
---   "missing" — tracked but no buff present (HUD shows a glowing icon)
---   "low"     — present but <= threshold remaining (HUD shows the icon + countdown)
---   "ok"      — present and healthy (HUD hides it)
--- Untracked consumables are omitted. The HUD shows only "missing"/"low"; when none qualify it
--- hides completely.
+-- Snapshot of tracked consumables for the HUD. Each: { key, label, icon, present, remaining,
+-- status } where status = "missing" / "low" (<= threshold) / "ok". Untracked ones omitted;
+-- the HUD shows only missing/low.
 function WQ.GetConsumableSnapshot()
     local scan      = ScanConsumables()
     local threshold = ConsumeThreshold()
@@ -1655,9 +1384,7 @@ function WQ.GetConsumableSnapshot()
     return rows
 end
 
--- Stage-A debug dump — no HUD yet, so call this in-game to verify detection:
---   /run Warlock_Qol_Tbc.DebugDumpConsumables()
--- Prints whether the feature is active, the threshold, and each tracked consumable's status.
+-- Debug dump (/run Warlock_Qol_Tbc.DebugDumpConsumables()): active state, threshold, each status.
 function WQ.DebugDumpConsumables()
     print(("|cff9900ffWarlockQol|r Consumables — active: %s, threshold: %ds"):format(
         ConsumablesActive() and "yes" or "no", ConsumeThreshold()))
@@ -1668,10 +1395,8 @@ function WQ.DebugDumpConsumables()
 end
 
 -- ── Profile management API ────────────────────────────────────────────────────
---
--- The UI (profile page) calls exactly these. All operations keep the runtime consistent:
--- the active-profile/char caches are refreshed and the combat-log listener is re-synced
--- whenever the bound profile or its feature flags may have changed.
+-- Called by the Profiles page. Each op refreshes the caches + re-syncs the combat-log listener
+-- when the bound profile or its flags may have changed.
 
 -- Name of the profile the current character is bound to.
 function WQ.GetActiveProfileName()
@@ -1679,7 +1404,7 @@ function WQ.GetActiveProfileName()
     return cs and cs.profile
 end
 
--- All profile names, sorted alphabetically (a stable order for the UI dropdown/list).
+-- All profile names, sorted.
 function WQ.ListProfiles()
     local names = {}
     if Warlock_Qol_Tbc_DB and Warlock_Qol_Tbc_DB.profiles then
@@ -1703,8 +1428,7 @@ function WQ.SwitchProfile(name)
     return true
 end
 
--- Create a new default-seeded profile and switch the current character to it. Trims the
--- name; rejects empty (false,"empty") and a name that already exists (false,"exists").
+-- Create a default-seeded profile and switch to it. Rejects empty / existing name.
 function WQ.CreateProfile(name)
     name = name and name:match("^%s*(.-)%s*$") or ""
     if name == "" then return false, "empty" end
@@ -1718,9 +1442,7 @@ function WQ.CreateProfile(name)
     return true
 end
 
--- Deep-copy the source profile's contents INTO the current active profile (overwrite),
--- staying bound to the active profile. Rejects copying onto itself (false,"same") and an
--- unknown source (false,"unknown"). The two profiles never share table references.
+-- Deep-copy a source profile INTO the active profile (overwrite). Rejects same/unknown source.
 function WQ.CopyProfileInto(sourceName)
     if not (Warlock_Qol_Tbc_DB.profiles and Warlock_Qol_Tbc_DB.profiles[sourceName]) then
         return false, "unknown"
@@ -1731,8 +1453,7 @@ function WQ.CopyProfileInto(sourceName)
 
     local src = Warlock_Qol_Tbc_DB.profiles[sourceName]
     local dst = ActiveProfile()
-    -- Overwrite in place (preserve the dst table identity so caches/bindings stay valid):
-    -- wipe every existing key, then deep-copy the source in.
+    -- Overwrite in place (preserve the table identity so caches stay valid).
     for k in pairs(dst) do dst[k] = nil end
     for k, v in pairs(src) do dst[k] = DeepCopy(v) end
     InitProfile(dst)                -- heal skeleton in case the source was partial
@@ -1740,8 +1461,7 @@ function WQ.CopyProfileInto(sourceName)
     return true
 end
 
--- Delete a profile. Guards: cannot delete the currently-active profile (false,"active"),
--- cannot delete the last remaining profile (false,"last"), unknown (false,"unknown").
+-- Delete a profile. Can't delete the active one ("active"), the last one ("last"), or unknown.
 function WQ.DeleteProfile(name)
     if not (Warlock_Qol_Tbc_DB.profiles and Warlock_Qol_Tbc_DB.profiles[name]) then
         return false, "unknown"
@@ -1755,15 +1475,9 @@ function WQ.DeleteProfile(name)
     return true
 end
 
--- Hard Reset (ACCOUNT-WIDE): wipe the whole addon back to a fresh-install state. Removes THIS
--- character's macros, then discards the ENTIRE SavedVariables DB — every profile, every
--- character's binding/master switch/pet-name cache/first-run flag, and the saved window
--- geometry — and rebuilds the skeleton, re-resolving this character so it gets a fresh
--- default-seeded profile exactly as a first install would (the first-run hub will show again
--- next login, and every other character gets a fresh profile the next time it logs in). The DB
--- table is wiped IN PLACE (its identity is preserved) so nothing holding the SavedVariable
--- reference is left pointing at a stale table. Blocked in combat (macro edits are). Driven by
--- the Reset page's "Hard Reset" button.
+-- Hard Reset (ACCOUNT-WIDE): remove this character's macros, then wipe the ENTIRE DB in place
+-- (all profiles + every char's state + window geometry) and rebuild, re-resolving this char to
+-- a fresh default profile. Wiped in place so the SavedVariable identity is preserved. Blocked in combat.
 function WQ.HardReset()
     if InCombatLockdown() then
         print("|cff9900ffWarlockQol|r: can't change macros in combat — try again afterwards.")
@@ -1787,17 +1501,12 @@ function WQ.HardReset()
 end
 
 -- ── Profile export / import (share strings) ───────────────────────────────────
---
--- A profile is a self-contained config table, so it can be shared between players as a
--- copy-paste string. Wire format:  WQT1!<base64( <checksum><serialized> )>
---   * "WQT1" is a format version so a future schema change can be rejected cleanly.
---   * <checksum> = 8 hex chars over the serialized body — catches a truncated/mangled
---     paste BEFORE we try to build a profile out of garbage.
---   * <serialized> is our own length-prefixed encoding (below), NOT a Lua chunk. Import
---     strings come from other players, so the parser only ever produces DATA and never
---     executes code (no loadstring / no sandboxed chunk — even an empty-env chunk can hang
---     the client via string-literal methods). The addon is dependency-free (see CLAUDE.md),
---     so base64 + serializer + parser are all hand-rolled here.
+-- A profile is a self-contained config table, shareable as a copy-paste string.
+-- Wire format:  WQT1!<base64( <8-hex-checksum><serialized> )>
+--   * WQT1     = format version (rejected if it ever changes).
+--   * checksum = catches a truncated/mangled paste before we build a profile from garbage.
+--   * serialized = our own length-prefixed encoding, NOT a Lua chunk — the parser only produces
+--     DATA, never executes code (no loadstring). Base64/serializer/parser are hand-rolled (dep-free).
 
 -- Base64 (standard alphabet). Operates on an arbitrary byte string.
 local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -1850,8 +1559,7 @@ local function Checksum(s)
     return string.format("%08x", h)
 end
 
--- A Lua table is treated as an ARRAY when its only keys are 1..#t (empty counts as array),
--- otherwise as a string-keyed MAP. Our profile schema never mixes the two in one table.
+-- Array if its only keys are 1..#t, else a string-keyed map (our schema never mixes them).
 local function IsArrayTable(t)
     local n = 0
     for _ in pairs(t) do n = n + 1 end
@@ -1891,9 +1599,8 @@ end
 
 local MAX_PARSE_DEPTH = 12   -- our real data is ~4 deep; caps a crafted string's recursion
 
--- Parse one value starting at `pos`. Returns nextPos, value on success; nil, "corrupt" on
--- any malformed input. `value` may be boolean false, so success is signalled by nextPos
--- being non-nil, never by the value. Purely constructs data — never executes anything.
+-- Parse one value at `pos`. Returns nextPos, value; or nil, "corrupt". Success = nextPos
+-- non-nil (value may be false). Only constructs data, never executes.
 local function ParseValue(s, pos, depth)
     if depth > MAX_PARSE_DEPTH then return nil, "corrupt" end
     local tag = s:sub(pos, pos)
@@ -1942,10 +1649,8 @@ local function ParseValue(s, pos, depth)
     return nil, "corrupt"
 end
 
--- Rebuild a clean profile table from a parsed/foreign table, pulling ONLY the known
--- shareable fields with the correct types (junk keys, wrong types, and non-string lines are
--- dropped). Used on both export (guarantee we ship a known shape) and import (never trust a
--- stranger's structure — this is what stops a malformed `lines` from crashing InitProfile).
+-- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
+-- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
 local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "banishEnabled", "trackerEnabled", "trackerShowRaid", "consumablesEnabled", "consumeShowRaid", "consumeGlow" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
@@ -1981,9 +1686,8 @@ local function SanitizeProfile(raw)
     for _, key in ipairs(IMPORT_SEED_FIELDS) do
         if type(raw[key]) == "boolean" then p[key] = raw[key] end
     end
-    -- per-cooldown tracking flags (map cdKey -> false). Only known cooldowns from
-    -- TRACKED_ORDER, and only an explicit false travels (absent = tracked; InitProfile
-    -- defaults the rest) so a foreign string can't inject arbitrary map keys.
+    -- Per-cooldown flags: only TRACKED_ORDER keys, only explicit false (so a foreign string
+    -- can't inject arbitrary keys).
     if type(raw.trackedCds) == "table" then
         local t
         for _, cdKey in ipairs(TRACKED_ORDER) do
@@ -2029,8 +1733,7 @@ local function DecodeExport(str)
     return true, tbl
 end
 
--- Export the named profile as a shareable string, or nil if that profile doesn't exist.
--- Ships a clean known-shape copy plus the source name (for the importer's name prefill).
+-- Export the named profile as a shareable string (nil if it doesn't exist).
 function WQ.ExportProfile(name)
     local prof = Warlock_Qol_Tbc_DB and Warlock_Qol_Tbc_DB.profiles and Warlock_Qol_Tbc_DB.profiles[name]
     if not prof then return nil end
@@ -2040,18 +1743,15 @@ function WQ.ExportProfile(name)
     return "WQT1!" .. Base64Encode(Checksum(body) .. body)
 end
 
--- Peek the source profile name embedded in an export string, for the UI's name prefill.
--- Returns the name string, or nil if the string can't be decoded.
+-- Peek the source name embedded in an export string (for name prefill), or nil.
 function WQ.PeekImportName(str)
     local ok, tbl = DecodeExport(str)
     if not ok then return nil end
     return type(tbl.name) == "string" and tbl.name or nil
 end
 
--- Import an export string as a NEW profile named `newName`. Never overwrites an existing
--- profile and never switches the character to it (the UI drives switching). Returns true,
--- or false + reason: "empty" (blank string/name), "badformat"/"badversion" (not our string),
--- "corrupt" (checksum/parse failure), "exists" (name already taken).
+-- Import an export string as a NEW profile `newName` (never overwrites, never switches).
+-- Returns true, or false + "empty"/"badformat"/"badversion"/"corrupt"/"exists".
 function WQ.ImportProfile(str, newName)
     local ok, tbl = DecodeExport(str)
     if not ok then return false, tbl end        -- tbl is the reason string here
@@ -2065,14 +1765,9 @@ function WQ.ImportProfile(str, newName)
 end
 
 -- ── Slash command ─────────────────────────────────────────────────────────────
---
--- SlashCmdList is a global WoW table. Assigning a function to a key registers
--- that function as the handler for the matching SLASH_* command strings.
-
 SLASH_WARLOCK_QOL_TBC1 = "/wq"
 SlashCmdList["WARLOCK_QOL_TBC"] = function(msg)
-    -- Toggle the window. Always reopen on the home page so "/wq" reliably
-    -- lands on the hub.
+    -- Toggle the window (always reopen on the home page).
     if Warlock_Qol_Tbc_Frame and Warlock_Qol_Tbc_Frame:IsShown() then
         Warlock_Qol_Tbc_Frame:Hide()
     elseif WQ.OpenHome then
