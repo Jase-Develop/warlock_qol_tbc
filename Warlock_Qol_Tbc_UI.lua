@@ -2564,9 +2564,12 @@ do
     local lastSig = nil
     local function Evaluate()
         if not WQ.IsConsumablesActive() then hud:Hide(); lastSig = nil; return end
+        -- Dead/ghost drops buffs (e.g. Well Fed) — don't nag; re-appears once alive again.
+        if UnitIsDeadOrGhost("player") then hud:Hide(); lastSig = nil; return end
         local d = HUDdb()
         local open     = d and d.open
-        local autoRaid = IsInRaid() and WQ.IsConsumeShowRaid()
+        -- Auto-show only in a raid group AND inside a raid instance (not just any raid group).
+        local autoRaid = IsInRaid() and WQ.IsConsumeShowRaid() and select(2, IsInInstance()) == "raid"
         if not (open or autoRaid) then hud:Hide(); lastSig = nil; return end
 
         local snap = (WQ.GetConsumableSnapshot and WQ.GetConsumableSnapshot()) or {}
