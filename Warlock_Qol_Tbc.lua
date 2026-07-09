@@ -88,7 +88,7 @@ WQ.PET_FAMILIES = { "Imp", "Voidwalker", "Succubus", "Incubus", "Felhunter", "Fe
 -- Account-wide SavedVariable (declared in the .toc). Layout:
 --   profiles[<name>] = shareable config (six line pools, *Enabled/*Seeded flags, tracker/
 --                      consumables settings)   -- account-wide so config can be copied between chars
---   chars[<Name-Realm>] = { profile, masterEnabled, setupComplete, petNames, ownCds }  -- per-char
+--   chars[<Name-Realm>] = { profile, masterEnabled, setupComplete, classDefaultApplied, petNames, ownCds }  -- per-char
 --   ui = window geometry (top-level, global)
 -- InitDB creates the skeleton on first install. See CLAUDE.md for the full field list.
 
@@ -204,6 +204,12 @@ EnsureProfileSeeded = function()
     if not p.soulsSeeded  then SeedSoulsDefaultLine();   p.soulsSeeded  = true end
     if not p.soulstoneSeeded then SeedSoulstoneDefaultLine(); p.soulstoneSeeded = true end
     if not p.banishSeeded then SeedBanishDefaultLines(); p.banishSeeded = true end
+end
+
+-- True if the player is a Warlock (class token is locale-independent). Reliable at PLAYER_LOGIN.
+local function IsWarlock()
+    local _, class = UnitClass("player")
+    return class == "WARLOCK"
 end
 
 -- Resolve + cache this character's binding (activeProfile + charState). No-op pre-PLAYER_LOGIN.
@@ -1072,10 +1078,21 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- First reliable point for UnitName/realm — resolve this character's profile binding.
         ResolveActiveBinding()
 
-        -- First run: show the setup wizard (per-char setupComplete gates it; the wizard sets the
-        -- flag on dismiss, not here). Fall back to the hub if the wizard is unavailable.
         local cs = CharState()
-        if cs and not cs.setupComplete then
+
+        -- One-time per-char default for the master switch, by class: warlocks default ON, everyone
+        -- else OFF (non-warlocks can still open the app and enable it themselves). Applied once via
+        -- classDefaultApplied so it never overrides a later manual toggle, and it corrects existing
+        -- characters on their next login too.
+        if cs and not cs.classDefaultApplied then
+            cs.masterEnabled = IsWarlock()
+            cs.classDefaultApplied = true
+        end
+
+        -- First run: show the setup wizard — WARLOCKS only (per-char setupComplete gates it; the
+        -- wizard sets the flag on dismiss, not here). Non-warlocks skip it (still reachable from the
+        -- Reset page's Show Setup Guide). Fall back to the hub if the wizard is unavailable.
+        if cs and not cs.setupComplete and IsWarlock() then
             if WQ.ShowWizard then
                 -- Defer one tick (frames shown mid-login can be swept closed); re-check the flag.
                 if C_Timer and C_Timer.After then
