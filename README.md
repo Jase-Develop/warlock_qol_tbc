@@ -32,4 +32,12 @@ Chat lines support WoW raid target markers (`{star}`, `{skull}`, …) via a quic
 
 ## License
 
-Bundled font PT Sans is licensed under the SIL Open Font License — see `Fonts/OFL.txt`.
+Copyright (C) 2026 Jase-Develop
+
+WarlockQol (TBC) is free software: you can redistribute it and/or modify it under the terms of
+the **GNU General Public License v3.0** as published by the Free Software Foundation. It is
+distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY. See the full license
+text in [`LICENSE`](LICENSE), or <https://www.gnu.org/licenses/gpl-3.0.html>.
+
+The bundled font **PT Sans** is licensed separately under the SIL Open Font License — see
+[`Fonts/OFL.txt`](Fonts/OFL.txt).
