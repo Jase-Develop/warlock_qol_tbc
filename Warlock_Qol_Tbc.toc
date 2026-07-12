@@ -3,6 +3,7 @@
 ## Notes: Quality of life tools for Warlocks (TBC 2.5.6) — pet summon, rituals, soulstone & banish announcements, raid cooldown tracker, missing consumables
 ## Version: 0.13
 ## SavedVariables: Warlock_Qol_Tbc_DB
+## X-Curse-Project-ID: 1607660
 
 Warlock_Qol_Tbc.lua
 Warlock_Qol_Tbc_UI.lua
