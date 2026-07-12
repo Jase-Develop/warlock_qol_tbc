@@ -1894,6 +1894,8 @@ do
         function() return WQ.IsConsumeShowRaid() end, function(v) WQ.SetConsumeShowRaid(v) end, 185)
     CheckRow("Glow missing icons", -76,
         function() return WQ.IsConsumeGlow() end, function(v) WQ.SetConsumeGlow(v) end)
+    CheckRow("Transparent mode", -76,
+        function() return WQ.IsConsumeTransparent() end, function(v) WQ.SetConsumeTransparent(v) end, 185)
 
     Rule(-108)
 
@@ -2621,9 +2623,24 @@ do
     function WQ.ToggleConsumablesHUD() WQ.SetConsumeHUDOpen(not WQ.IsConsumeHUDOpen()) end
     function WQ.DismissConsumablesHUD() WQ.SetConsumeHUDOpen(false) end   -- the HUD's X button
 
+    -- Transparent mode: drop the frame backdrop (bg + border) and hide the header (title/X) so only the
+    -- icon slots show. The whole frame stays mouse-enabled, so it's still draggable by its (now invisible)
+    -- area. Off restores the standard flat frame + 50% fill. Called on login and whenever the flag flips.
+    function WQ.ApplyConsumeTransparency()
+        if WQ.IsConsumeTransparent and WQ.IsConsumeTransparent() then
+            hud:SetBackdrop(nil)
+            hudHeader:Hide()
+        else
+            ApplyFlat(hud, THEME.bg, true)
+            hud:SetBackdropColor(THEME.bg[1], THEME.bg[2], THEME.bg[3], 0.5)
+            hudHeader:Show()
+        end
+    end
+
     -- Called from PLAYER_LOGIN (DB ready): restore position, start the driver if on, apply visibility.
     function WQ.InitConsumablesHUD()
         RestoreHUDPlacement()
+        WQ.ApplyConsumeTransparency()
         WQ.UpdateConsumablesRegistration()
         Evaluate()
     end

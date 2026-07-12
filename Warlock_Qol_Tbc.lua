@@ -140,6 +140,7 @@ local function InitProfile(p)
     if p.consumablesEnabled == nil then p.consumablesEnabled = true end
     if p.consumeShowRaid    == nil then p.consumeShowRaid    = true end
     if p.consumeGlow        == nil then p.consumeGlow        = true end   -- glow the missing icons
+    if p.consumeTransparent == nil then p.consumeTransparent = false end  -- hide HUD frame/header, icons only
     if p.consumeThreshold   == nil then p.consumeThreshold   = 120  end
     if not p.trackedConsumes then p.trackedConsumes = {} end
     -- Ensure every pet family has a lines table, even if empty.
@@ -1351,6 +1352,13 @@ function WQ.SetConsumeGlow(on)
     if WQ.RefreshConsumablesHUD then WQ.RefreshConsumablesHUD() end   -- force a rebuild (status unchanged)
 end
 
+-- Per-profile "transparent mode" flag. On = drop the HUD frame background/border + header (icons only).
+function WQ.IsConsumeTransparent() local p = ActiveProfile(); return p and p.consumeTransparent or false end
+function WQ.SetConsumeTransparent(on)
+    local p = ActiveProfile(); if p then p.consumeTransparent = on and true or false end
+    if WQ.ApplyConsumeTransparency then WQ.ApplyConsumeTransparency() end
+end
+
 -- Per-consumable tracking toggle (data-driven). Off removes it from the HUD entirely.
 function WQ.IsConsumeTracked(key) return IsConsumeTracked(key) end
 function WQ.SetConsumeTracked(key, on)
@@ -1669,7 +1677,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "banishEnabled", "trackerEnabled", "trackerShowRaid", "consumablesEnabled", "consumeShowRaid", "consumeGlow" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "banishEnabled", "trackerEnabled", "trackerShowRaid", "consumablesEnabled", "consumeShowRaid", "consumeGlow", "consumeTransparent" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)
