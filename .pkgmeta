@@ -1,0 +1,13 @@
+# BigWigs packager config — https://github.com/BigWigsMods/packager
+# The repo is named lowercase (warlock_qol_tbc) but the shipped AddOn folder MUST be
+# "Warlock_Qol_Tbc" (the .toc / ADDON_LOADED identity string depends on it), so pin it.
+package-as: Warlock_Qol_Tbc
+
+enable-nolib-creation: no
+
+# Dev/CI files that should not ship inside the packaged AddOn.
+ignore:
+  - ".github"
+  - ".gitignore"
+  - ".gitattributes"
+  - ".pkgmeta"

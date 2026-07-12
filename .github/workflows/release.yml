@@ -1,0 +1,27 @@
+name: Package and release
+
+# Fires ONLY on a version tag (e.g. v0.13) pushed to the repo — never on a plain
+# branch push. So routine dev/main pushes publish nothing; a release happens exactly
+# when a tag is pushed.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # needed for the packager to create/attach the GitHub release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone project
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so the packager can build the changelog
+
+      - name: Package and release
+        uses: BigWigsMods/packager@v2
+        env:
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}   # provided automatically by GitHub
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}       # add in repo Settings → Secrets (CurseForge upload)

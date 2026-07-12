@@ -7,6 +7,9 @@
 *.xml text eol=lf
 *.md  text eol=lf
 *.txt text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+.pkgmeta text eol=lf
 
 # Binary assets — never convert.
 *.ttf binary
