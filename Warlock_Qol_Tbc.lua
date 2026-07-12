@@ -1177,6 +1177,12 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         RequestTrackerSync()
         if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
         if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        -- Zoning (incl. entering/leaving a raid instance) — GROUP_ROSTER_UPDATE does NOT fire on a
+        -- zone change, so drive the tracker's auto-show transition off this event too.
+        if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
+        if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
     end
 end)
 
@@ -1200,9 +1206,11 @@ UpdateTrackerRegistration = function()
     if TrackerActive() then
         eventFrame:RegisterEvent("CHAT_MSG_ADDON")
         eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+        eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")   -- fires on zone-in (raid instance entry)
     else
         eventFrame:UnregisterEvent("CHAT_MSG_ADDON")
         eventFrame:UnregisterEvent("GROUP_ROSTER_UPDATE")
+        eventFrame:UnregisterEvent("PLAYER_ENTERING_WORLD")
     end
 end
 

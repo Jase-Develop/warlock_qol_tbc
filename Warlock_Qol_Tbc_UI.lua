@@ -1800,8 +1800,8 @@ do
         function() return WQ.IsTrackerShowRaid() end,
         function(v)
             WQ.SetTrackerShowRaid(v)
-            -- Enabling while already in a raid won't hit a transition, so open the HUD now.
-            if v and IsInRaid() then WQ.SetTrackerHUDOpen(true) end
+            -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
+            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetTrackerHUDOpen(true) end
         end, 185)
     local cap = Caption("Auto-show opens it automatically whenever you're in a raid.", -60)
     cap:SetPoint("TOPRIGHT", track, "TOPRIGHT", WRAP, -60)
@@ -1891,7 +1891,12 @@ do
     CheckRow("Show HUD", -50,
         function() return WQ.IsConsumeHUDOpen() end, function(v) WQ.SetConsumeHUDOpen(v) end)
     CheckRow("Auto-show in raid", -50,
-        function() return WQ.IsConsumeShowRaid() end, function(v) WQ.SetConsumeShowRaid(v) end, 185)
+        function() return WQ.IsConsumeShowRaid() end,
+        function(v)
+            WQ.SetConsumeShowRaid(v)
+            -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
+            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetConsumeHUDOpen(true) end
+        end, 185)
     CheckRow("Glow missing icons", -76,
         function() return WQ.IsConsumeGlow() end, function(v) WQ.SetConsumeGlow(v) end)
     CheckRow("Transparent mode", -76,
@@ -2326,17 +2331,21 @@ do
 
     -- Visibility = ONE persisted flag, trackerHUD.open (the "Show HUD" toggle + the X button set it
     -- directly, so Show HUD always takes effect). The "Auto-show in raid" toggle just drives that flag
-    -- on raid transitions: entering opens, leaving closes. Raid-only feature.
-    local wasInRaid = false   -- last-seen raid state, to detect enter/leave transitions
+    -- on raid-instance transitions: entering opens, leaving closes. Raid-only feature.
+    -- "In a raid" here means inside a raid INSTANCE (matches the consumables HUD), not merely a raid group —
+    -- GROUP_ROSTER_UPDATE fires at group-join in the world (easily missed/dismissed), so the transition is
+    -- keyed off zoning into the instance instead (driven by the core's PLAYER_ENTERING_WORLD).
+    local function InRaidInstance() return IsInRaid() and select(2, IsInInstance()) == "raid" end
+    local wasInRaid = false   -- last-seen raid-instance state, to detect enter/leave transitions
 
-    -- Recompute visibility and show/hide. Called on the feature flag, the auto-show toggle, and roster
-    -- changes (the roster call drives the raid transition).
+    -- Recompute visibility and show/hide. Called on the feature flag, the auto-show toggle, roster
+    -- changes, and zone changes (PLAYER_ENTERING_WORLD drives the raid-instance transition).
     local function ApplyHUDVisibility()
         local d = HUDdb()
         if not d then hud:Hide(); return end
-        local nowRaid = IsInRaid()
+        local nowRaid = InRaidInstance()
         if nowRaid ~= wasInRaid then
-            -- Raid entered/left: auto-show opens on entering, closes on leaving.
+            -- Raid instance entered/left: auto-show opens on entering, closes on leaving.
             if WQ.IsTrackerShowRaid() then d.open = nowRaid and true or false end
             wasInRaid = nowRaid
         end
@@ -2561,18 +2570,25 @@ do
     end
 
     -- Visibility / content. One evaluation used by the driver tick and the setters. want = active AND
-    -- (manual "open" OR raid auto-show). Content = ONLY missing/low; none → hide completely (no preview,
-    -- healthy consumables never show).
+    -- persistent "open" flag. Auto-show DRIVES that flag on raid-instance transitions (like the cooldown
+    -- HUD), so "Show HUD" / the X stay authoritative and can turn it off even while in a raid. Content =
+    -- ONLY missing/low; none → hide completely (no preview, healthy consumables never show) — that data
+    -- gate is separate from "open", so "invisible when nothing's missing" always holds.
     local lastSig = nil
+    local wasInRaid = false   -- last-seen raid-instance state, to detect enter/leave transitions
     local function Evaluate()
         if not WQ.IsConsumablesActive() then hud:Hide(); lastSig = nil; return end
         -- Dead/ghost drops buffs (e.g. Well Fed) — don't nag; re-appears once alive again.
         if UnitIsDeadOrGhost("player") then hud:Hide(); lastSig = nil; return end
         local d = HUDdb()
-        local open     = d and d.open
-        -- Auto-show only in a raid group AND inside a raid instance (not just any raid group).
-        local autoRaid = IsInRaid() and WQ.IsConsumeShowRaid() and select(2, IsInInstance()) == "raid"
-        if not (open or autoRaid) then hud:Hide(); lastSig = nil; return end
+        -- Raid group AND inside a raid instance (not just any raid group). Entering opens the HUD,
+        -- leaving closes it; between transitions the "open" flag is whatever the user last set.
+        local nowRaid = IsInRaid() and select(2, IsInInstance()) == "raid"
+        if nowRaid ~= wasInRaid then
+            if WQ.IsConsumeShowRaid() and d then d.open = nowRaid and true or false end
+            wasInRaid = nowRaid
+        end
+        if not (d and d.open) then hud:Hide(); lastSig = nil; return end
 
         local snap = (WQ.GetConsumableSnapshot and WQ.GetConsumableSnapshot()) or {}
         local shown = {}
