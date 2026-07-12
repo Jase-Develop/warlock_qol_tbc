@@ -1,6 +1,6 @@
 ## Interface: 20506
 ## Title: WarlockQol (TBC)
-## Notes: Quality of life tools for Warlocks (TBC 2.5.5) — pet summon, rituals, soulstone & banish announcements, raid cooldown tracker, missing consumables
+## Notes: Quality of life tools for Warlocks (TBC 2.5.6) — pet summon, rituals, soulstone & banish announcements, raid cooldown tracker, missing consumables
 ## Version: 0.13
 ## SavedVariables: Warlock_Qol_Tbc_DB
 
