@@ -2,6 +2,13 @@
 
 All notable player-facing changes are listed here, newest first.
 
+## [Unreleased]
+### Added
+- Missing Consumables now tracks **Elixirs** (the two warlock caster elixirs — Major Shadow
+  Power and Major Firepower). It's **off by default**, since you can't use an elixir together
+  with a flask: on a non-flask night, tick **Elixir** and untick **Flask** on the Missing
+  Consumables page.
+
 ## [0.15] - 2026-07-14
 ### Added
 - Raid Cooldowns HUD now has a **Soulstone Active** section showing which players currently

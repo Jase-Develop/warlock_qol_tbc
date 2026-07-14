@@ -1060,21 +1060,38 @@ local CONSUMABLES = {
         kind  = "aura",
         auras = { "Well Fed" },
     },
+    elixir = {
+        label = "Elixir",
+        icon  = "Interface\\Icons\\INV_Potion_105",   -- caster elixir (Major Shadow/Fire Power)
+        kind  = "aura",
+        -- The two warlock caster elixirs. Matched by buff NAME; both the item-name and short-spell-name
+        -- forms are listed so we catch whichever string the client uses. NOTE: you can't run an elixir
+        -- alongside a flask, so this one DEFAULTS OFF (enable it + turn Flask off for non-flask nights).
+        auras = { "Elixir of Major Shadow Power", "Major Shadow Power",
+                  "Elixir of Major Firepower",    "Major Firepower" },
+        defaultOff = true,   -- absent from trackedConsumes = NOT tracked (opposite of the others)
+    },
 }
 -- Stable display order.
-local CONSUMABLE_ORDER = { "flask", "oil", "food" }
+local CONSUMABLE_ORDER = { "flask", "oil", "food", "elixir" }
 
 -- Feature active for this character (master switch + per-profile flag).
 local function ConsumablesActive()
     return FeatureOn("consumablesEnabled")
 end
 
--- Whether a consumable is tracked (per-profile trackedConsumes; absent = tracked, only false disables).
+-- Whether a consumable is tracked. Explicit true/false in the per-profile trackedConsumes wins; when
+-- absent, fall back to the consumable's default (all default ON except ones flagged defaultOff, e.g.
+-- elixirs, which start OFF because they can't be used with a flask).
 local function IsConsumeTracked(key)
     local p = ActiveProfile()
     if not p then return false end
-    local t = p.trackedConsumes
-    return not t or t[key] ~= false
+    local v = p.trackedConsumes and p.trackedConsumes[key]
+    if v == nil then
+        local spec = CONSUMABLES[key]
+        return not (spec and spec.defaultOff)
+    end
+    return v ~= false
 end
 
 -- The "about to expire" warning window in seconds (per-profile; default/clamp 120 = 2 min).
@@ -1870,13 +1887,14 @@ local function SanitizeProfile(raw)
         end
         if t then p.trackedCds = t end
     end
-    -- per-consumable tracking flags — same shape/rules as trackedCds, whitelisted to CONSUMABLE_ORDER.
+    -- per-consumable tracking flags — whitelisted to CONSUMABLE_ORDER. Both booleans travel (unlike
+    -- trackedCds) because some consumables default OFF (elixirs), so an explicit `true` is meaningful.
     if type(raw.trackedConsumes) == "table" then
         local t
         for _, key in ipairs(CONSUMABLE_ORDER) do
-            if raw.trackedConsumes[key] == false then
+            if type(raw.trackedConsumes[key]) == "boolean" then
                 t = t or {}
-                t[key] = false
+                t[key] = raw.trackedConsumes[key]
             end
         end
         if t then p.trackedConsumes = t end
