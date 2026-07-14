@@ -2,7 +2,7 @@
 
 All notable player-facing changes are listed here, newest first.
 
-## [Unreleased]
+## [0.16] - 2026-07-14
 ### Added
 - Missing Consumables now tracks **Elixirs** (the two warlock caster elixirs — Major Shadow
   Power and Major Firepower). It's **off by default**, since you can't use an elixir together
