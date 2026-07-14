@@ -134,6 +134,8 @@ local function InitProfile(p)
     if p.trackerEnabled   == nil then p.trackerEnabled   = true end
     -- trackerShowRaid = auto-show HUD in raid. trackedCds[key]=false disables a cooldown (absent = tracked).
     if p.trackerShowRaid  == nil then p.trackerShowRaid  = true  end
+    -- soulstoneActiveEnabled = show the "Soulstones Out" section (who currently HAS a soulstone buff).
+    if p.soulstoneActiveEnabled == nil then p.soulstoneActiveEnabled = true end
     if not p.trackedCds   then p.trackedCds = {} end
     -- Missing Consumables: consumeShowRaid = auto-show in raid; consumeThreshold = expiry warning
     -- window (secs, default 120); trackedConsumes[key]=false disables one (absent = tracked).
@@ -771,7 +773,7 @@ local SOULSTONE_FALLBACK_CD = 1800  -- seconds (30 min); soulstone CD is a fixed
 local TRACKED_COOLDOWNS = {
     soulstone = {
         key      = "soulstone",
-        label    = "Soulstone",
+        label    = "Soulstone CD",
         class    = "WARLOCK",
         castName = SOULSTONE_SPELL_NAME,   -- reuse the announcer's cast-name match
         duration = SOULSTONE_FALLBACK_CD,
@@ -895,7 +897,8 @@ local function IsCdTracked(cdKey)
 end
 
 -- Ask everyone to rebroadcast (late-joiner catch-up). Throttled (GROUP_ROSTER_UPDATE spams).
-local lastSyncRequest = 0
+local lastSyncRequest  = 0
+local lastSyncResponse = 0   -- rate-limits our reply to incoming "R" so a flood can't make us spam
 local function RequestTrackerSync()
     if not TrackerActive() then return end
     local now = GetTime()
@@ -912,11 +915,18 @@ local function OnTrackerMessage(msg, sender)
     local tag = msg:sub(1, 1)
     if tag == "S" then
         local cdKey, rem = msg:match("^S:([%w_]+):(%d+)$")
-        if cdKey and rem and TRACKED_COOLDOWNS[cdKey] then
-            SetCooldown(cdKey, sender, tonumber(rem), "comms")
+        local spec = cdKey and TRACKED_COOLDOWNS[cdKey]
+        if spec and rem then
+            -- Clamp to the cooldown's own max so a crafted message can't show a bogus huge countdown.
+            local secs = math.min(tonumber(rem), spec.duration or SOULSTONE_FALLBACK_CD)
+            SetCooldown(cdKey, sender, secs, "comms")
             if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
         end
     elseif tag == "R" then
+        -- Rate-limit our reply so a "R" flood can't turn us into an addon-message spammer.
+        local now = GetTime()
+        if now - lastSyncResponse < 5 then return end
+        lastSyncResponse = now
         BroadcastAllCooldowns()
     end
 end
@@ -964,6 +974,68 @@ local function OnTrackedCast(cdKey, sourceName, sourceFlags)
         SetCooldown(cdKey, sourceName, spec.duration, "combatlog")
     end
     if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+end
+
+-- ── Soulstone Active tracker (who currently HAS a soulstone buff) ──────────────
+-- Distinct from the cooldown tracker above (that's the CASTER's 30-min CD); this is the 30-min
+-- resurrection buff sitting on the TARGET. Detected by scanning group members' HELPFUL auras for
+-- the soulstone buff (same name the announcer matches). LOCAL only — everyone scans their own group,
+-- so no comms. ssActive[name] = { expires (GetTime domain, 0 = active but unknown time), isPlayer }.
+local ssActive = {}
+
+-- Units to scan: the raid (raid-only display), else the player + party (so it's testable in a party).
+local function GroupUnits()
+    local units = {}
+    if IsInRaid() then
+        for i = 1, GetNumGroupMembers() do units[#units + 1] = "raid" .. i end
+    else
+        units[#units + 1] = "player"
+        for i = 1, GetNumSubgroupMembers() do units[#units + 1] = "party" .. i end
+    end
+    return units
+end
+
+-- Return the soulstone buff's expirationTime on a unit (GetTime domain), or nil if absent.
+local function UnitSoulstoneExpiry(unit)
+    for i = 1, 40 do
+        local name, _, _, _, _, expiration = UnitAura(unit, i, "HELPFUL")
+        if not name then break end
+        if name == SOULSTONE_SPELL_NAME then return expiration or 0 end
+    end
+    return nil
+end
+
+-- Active for this character = master + tracker on + the per-profile "Soulstone Active" flag.
+local function ActiveSoulstonesActive()
+    local p = ActiveProfile()
+    return TrackerActive() and p and p.soulstoneActiveEnabled and true or false
+end
+
+-- Rescan the group and rebuild ssActive. Returns true if the SET of stoned players changed (so the
+-- HUD knows to rebuild rows vs. just re-tick the countdowns). Clears the store when the feature is off.
+local function ScanActiveSoulstones()
+    if not ActiveSoulstonesActive() then
+        local had = next(ssActive) ~= nil
+        ssActive = {}
+        return had
+    end
+    local seen = {}
+    for _, unit in ipairs(GroupUnits()) do
+        if UnitExists(unit) then
+            local exp = UnitSoulstoneExpiry(unit)
+            if exp then
+                local name = StripRealm(UnitName(unit))
+                if name and name ~= "" then
+                    seen[name] = { expires = exp, isPlayer = UnitIsUnit(unit, "player") }
+                end
+            end
+        end
+    end
+    local changed = false
+    for name in pairs(seen)     do if not ssActive[name] then changed = true break end end
+    if not changed then for name in pairs(ssActive) do if not seen[name] then changed = true break end end end
+    ssActive = seen
+    return changed
 end
 
 -- ── Missing Consumables (detection core) ──────────────────────────────────────
@@ -1156,6 +1228,11 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             end
             -- Feed the Raid CD Tracker (my cast broadcasts real time; a group member's is a guess).
             OnTrackedCast("soulstone", sourceName, sourceFlags)
+            -- A stone was just cast on someone — refresh the "Soulstones Out" list immediately.
+            if ActiveSoulstonesActive() then
+                ScanActiveSoulstones()
+                if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+            end
         elseif spellName == BanishName() and IsMine(sourceFlags) then
             -- Fires only on MY banishes: landed (aura applied) or resisted. Rank appended.
             if subevent == "SPELL_AURA_APPLIED" then
@@ -1330,6 +1407,68 @@ function WQ.DebugDumpCooldowns()
         end
         print(("  %s%s: %s"):format(row.name, row.isPlayer and " (you)" or "", table.concat(parts, ", ")))
     end
+end
+
+-- ── Soulstone Active public API ────────────────────────────────────────────────
+-- Per-profile flag driving the HUD's "Soulstones Out" section. Setter rescans + rebuilds the HUD.
+function WQ.IsSoulstoneActiveEnabled() local p = ActiveProfile(); return p and p.soulstoneActiveEnabled or false end
+function WQ.SetSoulstoneActiveEnabled(on)
+    local p = ActiveProfile(); if p then p.soulstoneActiveEnabled = on and true or false end
+    ScanActiveSoulstones()
+    if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+end
+
+-- Rescan the group for soulstone buffs; returns true if the set of stoned players changed. The HUD's
+-- driver calls this on a slow (~1s) tick and rebuilds its rows when it returns true.
+function WQ.RefreshActiveSoulstones() return ScanActiveSoulstones() end
+
+-- Sorted snapshot for the HUD: { name, remaining (nil = active/unknown time), isPlayer }, self first.
+function WQ.GetActiveSoulstones()
+    local list = {}
+    for name, info in pairs(ssActive) do
+        local rem
+        if info.expires and info.expires > 0 then
+            rem = info.expires - GetTime()
+            if rem < 0 then rem = 0 end
+        end
+        list[#list + 1] = { name = name, remaining = rem, isPlayer = info.isPlayer }
+    end
+    table.sort(list, function(a, b)
+        if a.isPlayer ~= b.isPlayer then return a.isPlayer end
+        return a.name < b.name
+    end)
+    return list
+end
+
+-- Cheap store-only remaining getter for the HUD's per-frame tick. nil = not active; 0 = active but
+-- unknown duration; >0 = seconds left.
+function WQ.GetSoulstoneRemaining(name)
+    local info = ssActive[StripRealm(name)]
+    if not info then return nil end
+    if not info.expires or info.expires <= 0 then return 0 end
+    local rem = info.expires - GetTime()
+    return rem > 0 and rem or 0
+end
+
+-- Debug dump (/run Warlock_Qol_Tbc.DebugDumpSoulstones()): RAW group scan, bypassing the enable
+-- toggle, so it's a pure feasibility probe — does the client report the soulstone buff (and its
+-- duration) on each group member, including out-of-range ones? Matched by name = SOULSTONE_SPELL_NAME.
+function WQ.DebugDumpSoulstones()
+    print(("|cff9900ffWarlockQol|r Soulstones Out — feature active: %s (matching buff \"%s\")")
+        :format(ActiveSoulstonesActive() and "yes" or "no", SOULSTONE_SPELL_NAME))
+    local found = 0
+    for _, unit in ipairs(GroupUnits()) do
+        if UnitExists(unit) then
+            local exp = UnitSoulstoneExpiry(unit)
+            if exp then
+                found = found + 1
+                local t = (exp > 0) and (math.floor(exp - GetTime()) .. "s left") or "present, NO duration reported"
+                print(("  %s (%s)%s: %s"):format(StripRealm(UnitName(unit)) or "?", unit,
+                    UnitIsUnit(unit, "player") and " (you)" or "", t))
+            end
+        end
+    end
+    if found == 0 then print("  (no group member currently shows the soulstone buff — cast one and retry)") end
 end
 
 -- ── Missing Consumables public API ─────────────────────────────────────────────
@@ -1685,7 +1824,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "banishEnabled", "trackerEnabled", "trackerShowRaid", "consumablesEnabled", "consumeShowRaid", "consumeGlow", "consumeTransparent" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "banishEnabled", "trackerEnabled", "trackerShowRaid", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeGlow", "consumeTransparent" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)

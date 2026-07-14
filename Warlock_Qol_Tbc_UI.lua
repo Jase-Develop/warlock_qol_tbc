@@ -1809,9 +1809,13 @@ do
 
     Rule(-88)
 
-    -- Tracked-cooldowns section — one checkbox per tracked cooldown (data-driven; grows with TRACKED_ORDER).
-    Heading("Tracked Cooldowns", -104)
-    local y = -128
+    -- Tracked section — the CD checkboxes (data-driven, grows with TRACKED_ORDER) plus the standalone
+    -- "Soulstone Active" toggle (who currently HAS a soulstone buff, vs. the caster's cooldown).
+    Heading("Tracked", -104)
+    local cap2 = Caption("Soulstone CD = each warlock's cooldown timer.  Soulstone Active = who currently has a soulstone.", -126)
+    cap2:SetPoint("TOPRIGHT", track, "TOPRIGHT", WRAP, -126)
+    cap2:SetJustifyH("LEFT")
+    local y = -158
     for _, key in ipairs(WQ.TRACKED_ORDER or {}) do
         local spec = WQ.TRACKED_COOLDOWNS and WQ.TRACKED_COOLDOWNS[key]
         local label = spec and spec.label or key
@@ -1820,6 +1824,10 @@ do
             function(v) WQ.SetCooldownTracked(key, v) end)
         y = y - 28
     end
+    CheckRow("Soulstone Active", y,
+        function() return WQ.IsSoulstoneActiveEnabled() end,
+        function(v) WQ.SetSoulstoneActiveEnabled(v) end)
+    y = y - 28
 
     -- Re-sync every checkbox. Runs on page show, and exposed so the HUD's X button can call it after
     -- flipping "Show HUD" off, keeping the page checkbox in sync.
@@ -2078,6 +2086,7 @@ do
     local HUD_HEADER_H = 20
     local HUD_PAD      = 6
     local HUD_BODY_TOP = HUD_PAD + HUD_HEADER_H + 4   -- y-offset of the first row below the header
+    local HUD_SECT_H   = 16                           -- height of the "Soulstones Out" section label
     local HUD_KEY      = "soulstone"                  -- the one tracked cooldown for now
 
     -- mm:ss for a minute+, else "Ns". Only called with remaining > 0.
@@ -2191,8 +2200,9 @@ do
         GameTooltip:Hide()
     end)
 
-    -- Announce a warlock's cooldown to the group (e.g. "Rimm: Soulstone - 17:34 remaining" / "… - Ready").
+    -- Announce a warlock's cooldown to the group (e.g. "Rimm: Soulstone CD - 17:34 remaining" / "… - Ready").
     -- GROUP ONLY: RAID else PARTY; solo does nothing (never /say a group callout to strangers).
+    -- The "CD" wording comes from the tracked cooldown's label (so it's clearly the cooldown, not a buff).
     local function AnnounceCooldown(name)
         if not name or name == "" then return end
         local channel = IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or nil)
@@ -2209,10 +2219,25 @@ do
         SendChatMessage(msg, channel)
     end
 
-    -- Row pool. Each row: [cd icon] [warlock name] … [timer / Ready]. Rows are Buttons: a plain drag
-    -- moves the HUD, CTRL+Click announces that warlock's cooldown (AnnounceCooldown).
-    local hudRows = {}
-    local function MakeHUDRow()
+    -- Announce that a player currently HAS a soulstone (the buff), fired by CTRL+Click on a
+    -- "Soulstones Out" row. Group-only, like AnnounceCooldown. Reads the live remaining time.
+    local function AnnounceSoulstone(name)
+        if not name or name == "" then return end
+        local channel = IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or nil)
+        if not channel then return end
+        local rem = WQ.GetSoulstoneRemaining and WQ.GetSoulstoneRemaining(name)
+        local msg
+        if rem and rem > 0 then
+            msg = ("%s has a Soulstone - %s remaining"):format(name, FormatCD(rem))
+        else
+            msg = ("%s has a Soulstone"):format(name)
+        end
+        SendChatMessage(msg, channel)
+    end
+
+    -- Shared row builder. Each row: [icon] [name] … [timer]. Rows are Buttons: a plain drag moves the
+    -- HUD, CTRL+Click runs onCtrlClick(self.rowName). Used by both the CD rows and the soulstone rows.
+    local function MakeRow(onCtrlClick)
         local row = CreateFrame("Button", nil, hud)
         row:SetHeight(HUD_ROW_H)
         row:EnableMouse(true)
@@ -2224,9 +2249,9 @@ do
             if not (dd and dd.locked) then hud:StartMoving() end
         end)
         row:SetScript("OnDragStop", function() hud:StopMovingOrSizing(); SaveHUDPlacement() end)
-        -- CTRL+Click announces this row's warlock cooldown; a plain click does nothing.
+        -- CTRL+Click announces this row; a plain click does nothing.
         row:SetScript("OnClick", function(self)
-            if IsControlKeyDown() then AnnounceCooldown(self.warlockName) end
+            if IsControlKeyDown() and onCtrlClick then onCtrlClick(self.rowName) end
         end)
         -- Subtle accent wash on hover so the rows read as interactive.
         row:SetHighlightTexture("Interface\\Buttons\\WHITE8X8")
@@ -2255,6 +2280,12 @@ do
         return row
     end
 
+    -- CD-row pool (warlock cooldowns) + soulstone-row pool (who currently holds a stone).
+    local hudRows = {}
+    local ssRows  = {}
+    local function MakeHUDRow() return MakeRow(AnnounceCooldown) end
+    local function MakeSsRow()  return MakeRow(AnnounceSoulstone) end
+
     -- Shown when there are no warlocks to display (so the frame isn't a confusing empty box).
     local hudEmpty = hud:CreateFontString(nil, "OVERLAY")
     ApplyFontItalic(hudEmpty, 11)
@@ -2263,8 +2294,17 @@ do
     hudEmpty:SetText("No warlocks in group")
     hudEmpty:Hide()
 
+    -- Dim section label above the soulstone rows (separates them from the CD rows). Positioned in Refresh.
+    local ssHeader = hud:CreateFontString(nil, "OVERLAY")
+    ApplyFont(ssHeader, 11)
+    ssHeader:SetJustifyH("LEFT")
+    ssHeader:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+    ssHeader:SetText("Soulstone Active")
+    ssHeader:Hide()
+
     -- Active rows shown: { row, name }. The tick reads each name's remaining time without a rebuild.
-    local hudActive = {}
+    local hudActive = {}   -- CD rows
+    local ssActive  = {}   -- soulstone rows
 
     local function UpdateHUDTimers()
         for _, a in ipairs(hudActive) do
@@ -2277,15 +2317,30 @@ do
                 a.row.timer:SetTextColor(0.30, 0.80, 0.30)                                   -- ready = green
             end
         end
+        for _, a in ipairs(ssActive) do
+            local rem = WQ.GetSoulstoneRemaining and WQ.GetSoulstoneRemaining(a.name)
+            if rem == nil then
+                a.row.timer:SetText("")                                              -- gone; pruned next rebuild
+            elseif rem > 0 then
+                a.row.timer:SetText(FormatCD(rem))
+                a.row.timer:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3]) -- buff up = neutral/white
+            else
+                a.row.timer:SetText("Active")                                         -- present, unknown duration
+                a.row.timer:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+            end
+        end
     end
 
     -- Rebuild the rows from the roster snapshot. Called on membership/data changes only.
     function WQ.RefreshTrackerHUD()
         if not hud:IsShown() then return end
+        if WQ.RefreshActiveSoulstones then WQ.RefreshActiveSoulstones() end   -- freshen the store before we read it
         local snap = (WQ.GetTrackerSnapshot and WQ.GetTrackerSnapshot()) or {}
         local spec = WQ.TRACKED_COOLDOWNS and WQ.TRACKED_COOLDOWNS[HUD_KEY]
         wipe(hudActive)
+        wipe(ssActive)
 
+        -- Section 1: warlock cooldown rows.
         local y = -HUD_BODY_TOP
         local shown = 0
         for _, entry in ipairs(snap) do
@@ -2297,7 +2352,7 @@ do
             row:SetPoint("TOPRIGHT", hud, "TOPRIGHT", -HUD_PAD, y)
             row.icon:SetTexture(spec and spec.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
             row.name:SetText(entry.name)
-            row.warlockName = entry.name   -- CTRL+Click announce reads this
+            row.rowName = entry.name   -- CTRL+Click announce reads this
             -- Own row tinted accent; others off-white, so you spot yourself.
             if entry.isPlayer then
                 row.name:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
@@ -2312,17 +2367,59 @@ do
 
         if shown == 0 then
             hudEmpty:Show()
-            hud:SetHeight(HUD_BODY_TOP + HUD_ROW_H + HUD_PAD)
+            y = y - HUD_ROW_H       -- reserve the empty-message line
         else
             hudEmpty:Hide()
-            hud:SetHeight(HUD_BODY_TOP + shown * HUD_ROW_H + HUD_PAD)
         end
-        UpdateHUDTimers()   -- paint immediately; don't wait for the next tick
+
+        -- Section 2: "Soulstones Out" — who currently HAS a soulstone buff (optional; toggle-gated).
+        local ssList = (WQ.IsSoulstoneActiveEnabled and WQ.IsSoulstoneActiveEnabled()
+                        and WQ.GetActiveSoulstones and WQ.GetActiveSoulstones()) or {}
+        local ssShown = 0
+        if #ssList > 0 then
+            ssHeader:ClearAllPoints()
+            ssHeader:SetPoint("TOPLEFT", hud, "TOPLEFT", HUD_PAD + 2, y - 2)
+            ssHeader:Show()
+            y = y - HUD_SECT_H
+            for _, e in ipairs(ssList) do
+                ssShown = ssShown + 1
+                local row = ssRows[ssShown] or MakeSsRow()
+                ssRows[ssShown] = row
+                row:ClearAllPoints()
+                row:SetPoint("TOPLEFT",  hud, "TOPLEFT",   HUD_PAD, y)
+                row:SetPoint("TOPRIGHT", hud, "TOPRIGHT", -HUD_PAD, y)
+                row.icon:SetTexture(spec and spec.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+                row.name:SetText(e.name)
+                row.rowName = e.name
+                if e.isPlayer then
+                    row.name:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+                else
+                    row.name:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+                end
+                row:Show()
+                ssActive[ssShown] = { row = row, name = e.name }
+                y = y - HUD_ROW_H
+            end
+        else
+            ssHeader:Hide()
+        end
+        for i = ssShown + 1, #ssRows do ssRows[i]:Hide() end
+
+        hud:SetHeight(-y + HUD_PAD)   -- content bottom (-y) plus bottom padding
+        UpdateHUDTimers()             -- paint immediately; don't wait for the next tick
     end
 
-    -- Live tick — repaint the countdowns a few times a second (cheap: store reads only).
-    local acc = 0
+    -- Live tick — repaint the countdowns a few times a second (cheap: store reads only), and rescan the
+    -- soulstone buffs on a slower ~1s cadence (rebuilds only when the set of stoned players changes).
+    local acc, scanAcc = 0, 0
     hud:SetScript("OnUpdate", function(_, elapsed)
+        scanAcc = scanAcc + elapsed
+        if scanAcc >= 1 then
+            scanAcc = 0
+            if WQ.RefreshActiveSoulstones and WQ.RefreshActiveSoulstones() then
+                WQ.RefreshTrackerHUD()   -- membership changed: rebuild rows
+            end
+        end
         acc = acc + elapsed
         if acc < 0.2 then return end
         acc = 0

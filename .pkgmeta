@@ -5,6 +5,10 @@ package-as: Warlock_Qol_Tbc
 
 enable-nolib-creation: no
 
+# Use our curated changelog as the release notes (GitHub release + CurseForge), instead of
+# letting the packager auto-generate one from git commit messages.
+manual-changelog: CHANGELOG.md
+
 # Dev/CI files that should not ship inside the packaged AddOn.
 ignore:
   - ".github"
