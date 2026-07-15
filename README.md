@@ -7,14 +7,15 @@ one-click macros the addon generates for you. WarlockQol is **dependency-free**.
 
 ## Features
 
-- **Demon Summon Lines** — per-family lines said in `/say` when you summon a demon.
-- **Ritual of Summoning** — a line announced to party/raid when you summon a player.
-- **Ritual of Souls** — a plain line said in `/say` when cast.
-- **Soulstone Announcement** — auto-announces to party/raid when a soulstone is cast in your group.
-- **Banish Announcement** — announces your own banishes (separate landed & resisted pools, automatic rank suffix).
-- **Raid Cooldown Tracker** — a movable HUD showing each raid warlock's tracked cooldown (Ready / live countdown).
-- **Missing Consumables** — a movable HUD flagging missing or soon-to-expire raid consumables.
-- **Profiles** — per-character config profiles, with copy and share-by-string export/import.
+- **Demon Summon Lines** - per-family lines said in `/say` when you summon a demon.
+- **Ritual of Summoning** - a line announced to party/raid when you summon a player.
+- **Ritual of Souls** - a plain line said in `/say` when cast.
+- **Soulstone Announcement** - auto-announces to party/raid when a soulstone is cast in your group.
+- **Banish Announcement** - announces your own banishes (separate landed & resisted pools, automatic rank suffix).
+- **Raid Cooldown Tracker** - a movable HUD showing each raid warlock's tracked cooldown (Ready / live countdown).
+- **Missing Consumables** - a movable HUD flagging missing or soon-to-expire raid consumables.
+- **Range Indicator** - a movable text HUD showing your current target's name and your distance to it as a yard range.
+- **Profiles** - per-character config profiles, with copy and share-by-string export/import.
 
 Chat lines support WoW raid target markers (`{star}`, `{skull}`, …) via a quick-insert row.
 
@@ -27,7 +28,7 @@ Chat lines support WoW raid target markers (`{star}`, `{skull}`, …) via a quic
 ## Usage
 
 - Type **`/wq`** or click the **minimap icon** to open the configuration window.
-- On first login a short setup wizard helps you create the macros — remember to drag each
+- On first login a short setup wizard helps you create the macros - remember to drag each
   `WQoL` macro onto an action bar before use.
 
 ## License
@@ -39,5 +40,5 @@ the **GNU General Public License v3.0** as published by the Free Software Founda
 distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY. See the full license
 text in [`LICENSE`](LICENSE), or <https://www.gnu.org/licenses/gpl-3.0.html>.
 
-The bundled font **PT Sans** is licensed separately under the SIL Open Font License — see
+The bundled font **PT Sans** is licensed separately under the SIL Open Font License - see
 [`Fonts/OFL.txt`](Fonts/OFL.txt).
