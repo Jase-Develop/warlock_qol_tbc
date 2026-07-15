@@ -1,22 +1,28 @@
-# WarlockQol (TBC) — Changelog
+## WarlockQol (TBC) — Changelog
 
 All notable player-facing changes are listed here, newest first.
 
-## [0.16] - 2026-07-14
-### Added
+---
+
+### [0.16] - 2026-07-14
+
+#### Added
 - Missing Consumables now tracks **Elixirs** (the two warlock caster elixirs — Major Shadow
   Power and Major Firepower). It's **off by default**, since you can't use an elixir together
   with a flask: on a non-flask night, tick **Elixir** and untick **Flask** on the Missing
   Consumables page.
 
-## [0.15] - 2026-07-14
-### Added
+---
+
+### [0.15] - 2026-07-14
+
+#### Added
 - Raid Cooldowns HUD now has a **Soulstone Active** section showing which players currently
   have a soulstone on them and how long it has left — so you can see at a glance who's still
   covered (and who used theirs). Toggle it on the Raid Cooldowns page with **Soulstone Active**;
   CTRL+Click a name to announce it to the group.
 
-### Changed
+#### Changed
 - The old **Soulstone** tracking toggle is now labelled **Soulstone CD** (the warlock's
   cooldown), to tell it apart from the new **Soulstone Active** tracker above.
 - Raid Cooldowns HUD: the group announcement (CTRL+Click a warlock's row) now reads
@@ -25,14 +31,20 @@ All notable player-facing changes are listed here, newest first.
 - Hardened the raid cooldown-sharing messages against spam and malformed data from other
   players (rate-limited resync replies; sanity-clamped incoming timers).
 
-## [0.14] - 2026-07-13
-### Fixed
+---
+
+### [0.14] - 2026-07-13
+
+#### Fixed
 - Raid Cooldown Tracker HUD now reliably pops up when you zone into a raid (it could
   previously fail to auto-show on entering the instance).
 - Missing Consumables HUD: the **Show HUD** toggle and the close (**X**) button now always
   work while you're in a raid — auto-show no longer forces the strip back on.
 
-## [0.13] - 2026-07-12
+---
+
+### [0.13] - 2026-07-12
+
 Initial public release on CurseForge. Quality-of-life tools for Warlocks on TBC Anniversary
 (2.5.6):
 
