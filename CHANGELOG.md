@@ -4,6 +4,17 @@ All notable player-facing changes are listed here, newest first.
 
 ---
 
+### [0.18] - 2026-07-15
+
+#### Fixed
+- **Range Indicator** now sizes itself to fit the target's name instead of cutting off longer
+  ones. It grows with the **Text size** setting too, so a larger font no longer clips the name.
+- **Range Indicator** now shows a range for friendly NPCs, which previously always read `(?)`.
+  The game gives no precise distance for them, so expect a wider bracket than usual and no
+  reading past about 28 yards.
+
+---
+
 ### [0.17] - 2026-07-15
 
 #### Added

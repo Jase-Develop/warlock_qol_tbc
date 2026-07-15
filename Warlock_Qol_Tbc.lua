@@ -1638,6 +1638,17 @@ local RANGE_FRIEND = {
     {  45, { 32698 } },                -- Wrangling Rope
     {  60, { 32825 } },                -- Soul Cannon (ceiling)
 }
+-- Fallback checkers for a unit that is neither attackable NOR assistable: a friendly NPC. NO item
+-- resolves on one (IsItemInRange answers "could I use this on that unit, distance aside?", and a
+-- bandage on a quest giver is not a valid action), so both ladders above return nil on every rung and
+-- the bracket would read "(?)". Interact distance is the only range signal an NPC exposes, so this is
+-- as good as it gets: coarse, and blind past ~28yd. LibRangeCheck has the same fallback and the same
+-- ceiling. Rung → candidate CheckInteractDistance indices, ascending.
+local RANGE_MISC = {
+    {  8, { 3 } },        -- duel
+    {  9, { 2 } },        -- trade (may not resolve on an NPC — DebugDumpRange shows whether it does)
+    { 28, { 4, 1 } },     -- follow / inspect
+}
 
 -- Feature active for this character (master switch + per-profile flag).
 local function RangeActive()
@@ -1674,6 +1685,33 @@ local function RungResult(ids, unit)
     return nil
 end
 
+-- Same contract as RungResult, but for the interact-distance rungs (RANGE_MISC).
+local function InteractResult(indices, unit)
+    for _, idx in ipairs(indices) do
+        local r = CheckInteractDistance(unit, idx)
+        if r ~= nil then return r and true or false end
+    end
+    return nil
+end
+
+-- Which ladder applies to a unit. THREE reaction classes, not two — the "not attackable = friendly
+-- player" assumption was wrong and left friendly NPCs with no working checker at all:
+--   harm   → attackable            → item ladder
+--   friend → assistable (players)  → item ladder + the UnitInRange anchor
+--   misc   → neither (NPCs)        → interact distance only
+local function ReactionClass(unit)
+    if UnitCanAttack("player", unit) then return "harm" end
+    if UnitCanAssist("player", unit) then return "friend" end
+    return "misc"
+end
+
+-- Ladder + rung resolver for a reaction class.
+local function LadderFor(class)
+    if class == "harm"   then return RANGE_HARM,   RungResult end
+    if class == "friend" then return RANGE_FRIEND, RungResult end
+    return RANGE_MISC, InteractResult
+end
+
 -- Bracket the current target's distance. Returns:
 --   nil            → no target
 --   name, lo, hi   → lo < dist ≤ hi (lo defaults 0 = within the smallest checker; hi nil = beyond
@@ -1685,8 +1723,8 @@ function WQ.GetTargetRange()
     local name = UnitName(unit) or "?"
 
     WarmRange()
-    local harm   = UnitCanAttack("player", unit)
-    local ladder = harm and RANGE_HARM or RANGE_FRIEND
+    local class = ReactionClass(unit)
+    local ladder, resolve = LadderFor(class)
 
     -- Accumulate: lo = largest OUT-of-range rung, hi = smallest IN-range rung. nil rungs skip.
     -- OUT rungs only count while no IN has been seen yet (ascending order → the first IN is the
@@ -1703,10 +1741,10 @@ function WQ.GetTargetRange()
     end
 
     -- Friendly group members get the reliable ~40yd UnitInRange anchor first.
-    if not harm and UnitInRange and (UnitInParty(unit) or UnitInRaid(unit)) then
+    if class == "friend" and UnitInRange and (UnitInParty(unit) or UnitInRaid(unit)) then
         consider(40, UnitInRange(unit) and true or false)
     end
-    for _, rung in ipairs(ladder) do consider(rung[1], RungResult(rung[2], unit)) end
+    for _, rung in ipairs(ladder) do consider(rung[1], resolve(rung[2], unit)) end
 
     if not any then return name, nil, nil end
     if hi and lo >= hi then lo = 0 end   -- guard an impossible bracket from checker disagreement
@@ -1771,14 +1809,21 @@ function WQ.DebugDumpRange()
     local bracket = (not lo and not hi) and "unknown" or (not hi and (">"..lo) or (lo.."-"..hi))
     print(("  %s → (%s yd)"):format(name or "?", bracket))
 
-    local harm   = UnitCanAttack("player", "target")
-    local ladder = harm and RANGE_HARM or RANGE_FRIEND
-    print(("  reaction: %s"):format(harm and "harm" or "friend"))
+    local class = ReactionClass("target")
+    local ladder = LadderFor(class)
+    local misc = (class == "misc")
+    print(("  reaction: %s%s"):format(class, misc and " (NPC — interact distance only, coarse)" or ""))
     for _, rung in ipairs(ladder) do
         local shown = nil
         for _, id in ipairs(rung[2]) do
-            local r = IsItemInRange(id, "target")
-            if r ~= nil then shown = (r and "IN  via " or "OUT via ") .. id; break end
+            -- misc rungs are CheckInteractDistance indices, not item IDs. Can't fold this into an
+            -- and/or chain: a false result would fall through to the item branch.
+            local r
+            if misc then r = CheckInteractDistance("target", id) else r = IsItemInRange(id, "target") end
+            if r ~= nil then
+                shown = (r and "IN  via " or "OUT via ") .. (misc and ("interact " .. id) or id)
+                break
+            end
         end
         print(("    %3dyd: %s"):format(rung[1], shown or "— (no candidate resolved)"))
     end

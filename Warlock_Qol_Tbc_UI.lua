@@ -2875,11 +2875,12 @@ end
 do
     local PAD      = 6
     local HEADER_H = 20
-    local HUD_W    = 168
+    local TEXT_PAD = 6                       -- text inset per side; the frame is TEXT_PAD*2 wider than its text
+    local HUD_MIN_W, HUD_MAX_W = 168, 300    -- width follows the target name, clamped to this range
     local HUD_H    = PAD + HEADER_H + 8 + 18 + 4 + 24 + PAD   -- header + name line + gap + range line
 
     local hud = CreateFrame("Frame", "Warlock_Qol_Tbc_RangeHUD", UIParent, "BackdropTemplate")
-    hud:SetSize(HUD_W, HUD_H)
+    hud:SetSize(HUD_MIN_W, HUD_H)
     hud:SetPoint("CENTER", UIParent, "CENTER", 320, 60)   -- default; user drags, then persisted
     hud:SetFrameStrata("MEDIUM")
     hud:SetClampedToScreen(true)
@@ -2900,13 +2901,13 @@ do
     hudTitle:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
     hudTitle:SetText("Range")
 
-    -- Target name + range bracket, same white OUTLINE style (WeakAura look). Name truncates to one
-    -- line; range anchors below it. Font size + vertical layout are set by LayoutRangeHUD (below).
+    -- Target name + range bracket, same white OUTLINE style (WeakAura look). Range anchors below the
+    -- name. Font size, width and vertical layout are all set by LayoutRangeHUD (below).
     local nameFS = hud:CreateFontString(nil, "OVERLAY")
-    ApplyFont(nameFS, 16, "OUTLINE")   -- default until ApplyRangeFont runs at login
+    ApplyFont(nameFS, 16, "OUTLINE")   -- default until LayoutRangeHUD runs at login
     nameFS:SetPoint("TOP", hud, "TOP", 0, -(PAD + HEADER_H + 8))
-    nameFS:SetWidth(HUD_W - 12)
-    nameFS:SetWordWrap(false)   -- long names truncate to one line, keeping the layout tidy
+    nameFS:SetWidth(HUD_MIN_W - TEXT_PAD * 2)
+    nameFS:SetWordWrap(false)   -- one line only; the frame widens to fit, so this only bites past HUD_MAX_W
     nameFS:SetJustifyH("CENTER")
     nameFS:SetTextColor(1, 1, 1)
     nameFS:SetShadowColor(0, 0, 0, 1)
@@ -2932,17 +2933,36 @@ do
         local point, _, relPoint, x, y = hud:GetPoint()
         d.point, d.relPoint, d.x, d.y = point, relPoint, x, y
     end
+
+    -- Re-anchor to CENTER without moving the frame on screen. The width tracks the target name
+    -- (LayoutRangeHUD), and only a CENTER anchor grows it symmetrically: off a corner anchor the
+    -- centred text would jump sideways every time the name length changed. StartMoving may leave any
+    -- anchor behind, so normalise after a drag and after restoring a saved (possibly corner) point.
+    local function NormalizeAnchor()
+        local cx, cy = hud:GetCenter()
+        if not cx then return end
+        local ratio = hud:GetEffectiveScale() / UIParent:GetEffectiveScale()
+        local px, py = UIParent:GetCenter()
+        hud:ClearAllPoints()
+        hud:SetPoint("CENTER", UIParent, "CENTER", cx * ratio - px, cy * ratio - py)
+    end
+
     local function RestoreHUDPlacement()
         local d = HUDdb(); if not d or not d.point then return end
         hud:ClearAllPoints()
         hud:SetPoint(d.point, UIParent, d.relPoint, d.x, d.y)
+        NormalizeAnchor()
     end
 
     hud:SetMovable(true)
     hud:EnableMouse(true)
     hud:RegisterForDrag("LeftButton")
     hud:SetScript("OnDragStart", function() hud:StartMoving() end)
-    hud:SetScript("OnDragStop", function() hud:StopMovingOrSizing(); SaveHUDPlacement() end)
+    hud:SetScript("OnDragStop", function()
+        hud:StopMovingOrSizing()
+        NormalizeAnchor()
+        SaveHUDPlacement()
+    end)
 
     -- Close button — clears the "Show HUD" flag (no auto-show, so it stays closed until re-enabled).
     local closeBtn = CreateFrame("Button", nil, hudHeader, "BackdropTemplate")
@@ -2964,6 +2984,35 @@ do
     end)
     closeBtn:SetScript("OnClick", function() if WQ.DismissRangeHUD then WQ.DismissRangeHUD() end end)
 
+    -- Size and re-flow the frame around its current text + font size. Called on login, on the
+    -- font-size setter, whenever transparency toggles (the header's presence moves the text), and
+    -- from Evaluate whenever the text changes (the width follows the target name).
+    --
+    -- Width: measured from the text, not fixed — a long boss name used to truncate at a hardcoded
+    -- 168px, which the font-size option made worse (it re-flowed the height but never the width).
+    -- The name is unconstrained before measuring so GetStringWidth reports the FULL natural width
+    -- rather than the truncated one. GetStringWidth can read 0 before the first layout pass; the
+    -- HUD_MIN_W clamp absorbs that, and Evaluate re-runs on the next tick anyway.
+    local function LayoutRangeHUD()
+        local sz = (WQ.GetRangeFontSize and WQ.GetRangeFontSize()) or 16
+        ApplyFont(nameFS,  sz, "OUTLINE")
+        ApplyFont(rangeFS, sz, "OUTLINE")
+
+        nameFS:SetWidth(0)   -- unconstrain: measure the whole name, not what currently fits
+        local want = math.max(nameFS:GetStringWidth() or 0, rangeFS:GetStringWidth() or 0)
+                     + TEXT_PAD * 2
+        if want < HUD_MIN_W then want = HUD_MIN_W elseif want > HUD_MAX_W then want = HUD_MAX_W end
+        hud:SetWidth(want)
+        nameFS:SetWidth(want - TEXT_PAD * 2)   -- re-constrain: names past the cap still truncate
+
+        local transparent = WQ.IsRangeTransparent and WQ.IsRangeTransparent()
+        local top = transparent and PAD or (PAD + HEADER_H + 6)   -- no header room when transparent
+        nameFS:ClearAllPoints()
+        nameFS:SetPoint("TOP", hud, "TOP", 0, -top)
+        local lineH = sz + 6                                      -- approx rendered line height
+        hud:SetHeight(top + lineH + 2 + lineH + PAD)
+    end
+
     -- Format the bracket returned by WQ.GetTargetRange(), always parenthesised: "(8-10)" / "(>45)"
     -- / "(0-8)" / "(?)".
     local function FormatRange(lo, hi)
@@ -2975,20 +3024,28 @@ do
 
     -- Visibility / content. want = active AND the persistent "open" flag. Stays visible while open
     -- (shows "No target" when untargeted) — no data gate, unlike the consumables strip.
+    local lastName, lastRange   -- last text rendered; re-layout only when it actually changes
     local function Evaluate()
         if not WQ.IsRangeActive() then hud:Hide(); return end
         local d = HUDdb()
         if not (d and d.open) then hud:Hide(); return end
 
         local name, lo, hi = WQ.GetTargetRange()
+        local nText, rText
         if not name then
             -- No target: hide entirely if the user opted in, else show a placeholder.
             if WQ.IsRangeHideNoTarget and WQ.IsRangeHideNoTarget() then hud:Hide(); return end
-            nameFS:SetText("No target")
-            rangeFS:SetText("")
+            nText, rText = "No target", ""
         else
-            nameFS:SetText(name)
-            rangeFS:SetText(FormatRange(lo, hi))
+            nText, rText = name, FormatRange(lo, hi)
+        end
+        -- Gate the re-layout: this runs 2.5x/sec, but the text only changes on a new target or a
+        -- crossed range boundary, and only then does the frame need re-sizing.
+        if nText ~= lastName or rText ~= lastRange then
+            lastName, lastRange = nText, rText
+            nameFS:SetText(nText)
+            rangeFS:SetText(rText)
+            LayoutRangeHUD()
         end
         if not hud:IsShown() then hud:Show() end
     end
@@ -3024,20 +3081,9 @@ do
     function WQ.ToggleRangeHUD() WQ.SetRangeHUDOpen(not WQ.IsRangeHUDOpen()) end
     function WQ.DismissRangeHUD() WQ.SetRangeHUDOpen(false) end   -- the HUD's X button
 
-    -- Apply the user's font size to both text lines and re-flow the frame around them. When
-    -- transparent (no header), the text starts near the top; otherwise it sits below the header.
-    -- Called on login, on the font-size setter, and whenever transparency toggles.
-    function WQ.ApplyRangeFont()
-        local sz = (WQ.GetRangeFontSize and WQ.GetRangeFontSize()) or 16
-        ApplyFont(nameFS,  sz, "OUTLINE")
-        ApplyFont(rangeFS, sz, "OUTLINE")
-        local transparent = WQ.IsRangeTransparent and WQ.IsRangeTransparent()
-        local top = transparent and PAD or (PAD + HEADER_H + 6)   -- no header room when transparent
-        nameFS:ClearAllPoints()
-        nameFS:SetPoint("TOP", hud, "TOP", 0, -top)
-        local lineH = sz + 6                                      -- approx rendered line height
-        hud:SetHeight(top + lineH + 2 + lineH + PAD)
-    end
+    -- Public entry point for the font-size setter (the page's Text size box). LayoutRangeHUD does
+    -- the work: font, width, and vertical re-flow.
+    function WQ.ApplyRangeFont() LayoutRangeHUD() end
 
     -- Transparent mode: drop the frame backdrop + hide the header, leaving only the text (still
     -- draggable by its now-invisible area). Off restores the flat frame + 50% fill. Re-flows the
@@ -3051,7 +3097,7 @@ do
             hud:SetBackdropColor(THEME.bg[1], THEME.bg[2], THEME.bg[3], 0.5)
             hudHeader:Show()
         end
-        WQ.ApplyRangeFont()
+        LayoutRangeHUD()
     end
 
     -- Called from PLAYER_LOGIN (DB ready): restore position, start the driver if on, apply visibility.
