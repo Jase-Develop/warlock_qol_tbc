@@ -4,6 +4,17 @@ All notable player-facing changes are listed here, newest first.
 
 ---
 
+### [0.17] - 2026-07-15
+
+#### Added
+- **Range Indicator** — a new movable HUD that shows your current target's name and your
+  distance to it as a yard range (e.g. 35-40), handy for fights where you need to keep a set
+  distance from a target. Find it under **Range Indicator** in the menu; it's off by default,
+  so switch it on when you need it. Options for a transparent (text-only) look, adjustable text
+  size, and hiding it when you have no target.
+
+---
+
 ### [0.16] - 2026-07-14
 
 #### Added
