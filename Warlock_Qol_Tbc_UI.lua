@@ -7,7 +7,7 @@ local WQ = Warlock_Qol_Tbc
 -- ── Window geometry ───────────────────────────────────────────────────────────
 local FRAME_W  = 800   -- default frame width (resizable)
 local FRAME_H  = 600   -- default frame height (resizable)
-local MIN_W, MIN_H = 600, 500   -- shrink limit (fits the 3-section nav, pinned buttons, Profiles Share section)
+local MIN_W, MIN_H = 600, 530   -- shrink limit (fits the 3-section nav, pinned buttons, Profiles Share section)
 local MAX_W, MAX_H = 940, 780   -- grow limit
 local ROW_H    = 26    -- height of each line entry in the scroll list
 local ROW_POOL = 24    -- row frames created per list (enough for MAX_H); visible count computed from list height
@@ -1968,6 +1968,114 @@ do
     cons.OnPageShow = WQ.SyncConsumablesPage
 end
 
+-- ── Range Indicator page (Raid) ────────────────────────────────────────────────
+-- Settings-only page for the Range HUD (a separate text frame at the end of the file). Header toggle
+-- drives rangeEnabled; body = Show HUD + Transparent mode. A manual on/off tool: no auto-show-in-raid.
+do
+    local rng = NewPage("range", "Range Indicator",
+        "A HUD showing your current target's name and your distance to it (as a yard range).",
+        { get = WQ.IsRangeEnabled, set = WQ.SetRangeEnabled })
+
+    local PAD_L, WRAP = 8, -16
+    local syncers = {}   -- widgets to re-sync from their getters on page show
+
+    local function CheckRow(label, y, get, set, x)
+        local cb = CreateFrame("CheckButton", nil, rng, "UICheckButtonTemplate,BackdropTemplate")
+        cb:SetSize(22, 22)
+        cb:SetPoint("TOPLEFT", rng, "TOPLEFT", x or PAD_L, y)
+        StyleCheckbox(cb)
+        cb:SetScript("OnClick", function(self)
+            set(self:GetChecked())
+            self.RefreshStateColor()
+        end)
+        local fs = rng:CreateFontString(nil, "OVERLAY")
+        ApplyFont(fs, 12)
+        fs:SetPoint("LEFT", cb, "RIGHT", 6, 0)
+        fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+        fs:SetText(label)
+        syncers[#syncers + 1] = function() cb:SetChecked(get() and true or false); cb.RefreshStateColor() end
+        return cb
+    end
+
+    local function Heading(text, y)
+        local h = rng:CreateFontString(nil, "OVERLAY")
+        ApplyFont(h, 13)
+        h:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+        h:SetPoint("TOPLEFT", rng, "TOPLEFT", PAD_L, y)
+        h:SetText(text)
+        return h
+    end
+    local function Caption(text, y)
+        local c = rng:CreateFontString(nil, "OVERLAY")
+        ApplyFont(c, 11)
+        c:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+        c:SetPoint("TOPLEFT", rng, "TOPLEFT", PAD_L, y)
+        c:SetPoint("TOPRIGHT", rng, "TOPRIGHT", WRAP, y)
+        c:SetJustifyH("LEFT")
+        c:SetText(text)
+        return c
+    end
+    local function Rule(y)
+        local r = rng:CreateTexture(nil, "ARTWORK")
+        r:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
+        r:SetPoint("TOPLEFT",  rng, "TOPLEFT",  PAD_L, y)
+        r:SetPoint("TOPRIGHT", rng, "TOPRIGHT", WRAP,  y)
+        r:SetHeight(1)
+    end
+
+    Heading("HUD", -6)
+    Caption("Shows your target's name and your distance as a yard range, e.g. (35-40) — WoW only " ..
+            "reports range in brackets, not exact yards.", -26)
+    CheckRow("Show HUD", -66,
+        function() return WQ.IsRangeHUDOpen() end, function(v) WQ.SetRangeHUDOpen(v) end)
+    CheckRow("Transparent mode", -66,
+        function() return WQ.IsRangeTransparent() end, function(v) WQ.SetRangeTransparent(v) end, 185)
+    CheckRow("Hide when no target", -92,
+        function() return WQ.IsRangeHideNoTarget() end, function(v) WQ.SetRangeHideNoTarget(v) end)
+
+    Rule(-124)
+
+    -- Text size: one control drives both the target name and the range value (points, clamped 8–40).
+    Heading("Text size", -140)
+    local fontLabel = rng:CreateFontString(nil, "OVERLAY")
+    ApplyFont(fontLabel, 12)
+    fontLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+    fontLabel:SetPoint("TOPLEFT", rng, "TOPLEFT", PAD_L, -166)
+    fontLabel:SetText("Name & range text size")
+
+    local fontBox = MakeFlatEditBox(rng)
+    fontBox:SetSize(40, 22)
+    fontBox:SetPoint("LEFT", fontLabel, "RIGHT", 8, 0)
+    fontBox:SetJustifyH("CENTER")
+    fontBox:SetMaxLetters(3)
+
+    local fontUnit = rng:CreateFontString(nil, "OVERLAY")
+    ApplyFont(fontUnit, 12)
+    fontUnit:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+    fontUnit:SetPoint("LEFT", fontBox, "RIGHT", 8, 0)
+    fontUnit:SetText("points")
+
+    local function RefreshFontBox() fontBox:SetText(("%d"):format(WQ.GetRangeFontSize())) end
+    local function CommitFont()
+        local n = tonumber(fontBox:GetText())
+        if n then WQ.SetRangeFontSize(n) end
+        RefreshFontBox()   -- reflect the stored (clamped) value
+    end
+    fontBox:SetScript("OnEnterPressed", function(self) CommitFont(); self:ClearFocus() end)
+    fontBox:SetScript("OnEscapePressed", function(self) RefreshFontBox(); self:ClearFocus() end)
+    fontBox:HookScript("OnEditFocusLost", function() CommitFont() end)
+    syncers[#syncers + 1] = RefreshFontBox
+
+    Rule(-198)
+    Caption("Drag the HUD to reposition it. With no target it shows \"No target\" (or hides, if you tick " ..
+            "the option above), and it reads \"(>60)\" when the target is beyond checking range.", -214)
+
+    function WQ.SyncRangePage()
+        for _, sync in ipairs(syncers) do sync() end
+    end
+    rng.OnPageShow = WQ.SyncRangePage
+end
+
 -- ── Left nav items ────────────────────────────────────────────────────────────
 -- Nav buttons (one per page) grouped under non-interactive section headers, built after the pages so
 -- ShowPage is wired. Selected item = accent fill + dark text; rest transparent, accent on hover.
@@ -1987,6 +2095,7 @@ do
         { header = "RAID" },
         { label = "Raid Cooldowns",         page = "tracking"     },
         { label = "Missing Consumables",    page = "consumables"  },
+        { label = "Range Indicator",        page = "range"        },
         { header = "SETTINGS" },
         { label = "Profiles",               page = "profiles"  },
         { label = "Reset",                  page = "reset"     },
@@ -2755,6 +2864,201 @@ do
         RestoreHUDPlacement()
         WQ.ApplyConsumeTransparency()
         WQ.UpdateConsumablesRegistration()
+        Evaluate()
+    end
+end
+
+-- ── Range Indicator HUD ──────────────────────────────────────────
+-- Standalone movable TEXT frame: target name (top) + a bracketed distance (below), e.g. "35-40".
+-- Purely local — reads WQ.GetTargetRange() (spell/item range checkers). A manual on/off tool, so
+-- (unlike the raid HUDs) it has no auto-show; a 0.4s driver keeps the range fresh as you move.
+do
+    local PAD      = 6
+    local HEADER_H = 20
+    local HUD_W    = 168
+    local HUD_H    = PAD + HEADER_H + 8 + 18 + 4 + 24 + PAD   -- header + name line + gap + range line
+
+    local hud = CreateFrame("Frame", "Warlock_Qol_Tbc_RangeHUD", UIParent, "BackdropTemplate")
+    hud:SetSize(HUD_W, HUD_H)
+    hud:SetPoint("CENTER", UIParent, "CENTER", 320, 60)   -- default; user drags, then persisted
+    hud:SetFrameStrata("MEDIUM")
+    hud:SetClampedToScreen(true)
+    ApplyFlat(hud, THEME.bg, true)
+    hud:SetBackdropColor(THEME.bg[1], THEME.bg[2], THEME.bg[3], 0.5)   -- ~50% transparent (border solid)
+    hud:Hide()
+
+    -- Header strip: title + close X (matches the other HUDs). No mouse, so drags fall through to hud.
+    local hudHeader = CreateFrame("Frame", nil, hud, "BackdropTemplate")
+    hudHeader:SetPoint("TOPLEFT",  hud, "TOPLEFT",   PAD, -PAD)
+    hudHeader:SetPoint("TOPRIGHT", hud, "TOPRIGHT", -PAD, -PAD)
+    hudHeader:SetHeight(HEADER_H)
+    ApplyFlat(hudHeader, THEME.panel, true)
+
+    local hudTitle = hudHeader:CreateFontString(nil, "OVERLAY")
+    ApplyFont(hudTitle, 12)
+    hudTitle:SetPoint("LEFT", hudHeader, "LEFT", 6, 0)
+    hudTitle:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    hudTitle:SetText("Range")
+
+    -- Target name + range bracket, same white OUTLINE style (WeakAura look). Name truncates to one
+    -- line; range anchors below it. Font size + vertical layout are set by LayoutRangeHUD (below).
+    local nameFS = hud:CreateFontString(nil, "OVERLAY")
+    ApplyFont(nameFS, 16, "OUTLINE")   -- default until ApplyRangeFont runs at login
+    nameFS:SetPoint("TOP", hud, "TOP", 0, -(PAD + HEADER_H + 8))
+    nameFS:SetWidth(HUD_W - 12)
+    nameFS:SetWordWrap(false)   -- long names truncate to one line, keeping the layout tidy
+    nameFS:SetJustifyH("CENTER")
+    nameFS:SetTextColor(1, 1, 1)
+    nameFS:SetShadowColor(0, 0, 0, 1)
+    nameFS:SetShadowOffset(1, -1)
+
+    local rangeFS = hud:CreateFontString(nil, "OVERLAY")
+    ApplyFont(rangeFS, 16, "OUTLINE")
+    rangeFS:SetPoint("TOP", nameFS, "BOTTOM", 0, -2)
+    rangeFS:SetJustifyH("CENTER")
+    rangeFS:SetTextColor(1, 1, 1)
+    rangeFS:SetShadowColor(0, 0, 0, 1)
+    rangeFS:SetShadowOffset(1, -1)
+
+    -- Persistence (position + open) — a top-level DB table like consumeHUD / trackerHUD.
+    local function HUDdb()
+        local db = Warlock_Qol_Tbc_DB
+        if not db then return nil end
+        db.rangeHUD = db.rangeHUD or {}
+        return db.rangeHUD
+    end
+    local function SaveHUDPlacement()
+        local d = HUDdb(); if not d then return end
+        local point, _, relPoint, x, y = hud:GetPoint()
+        d.point, d.relPoint, d.x, d.y = point, relPoint, x, y
+    end
+    local function RestoreHUDPlacement()
+        local d = HUDdb(); if not d or not d.point then return end
+        hud:ClearAllPoints()
+        hud:SetPoint(d.point, UIParent, d.relPoint, d.x, d.y)
+    end
+
+    hud:SetMovable(true)
+    hud:EnableMouse(true)
+    hud:RegisterForDrag("LeftButton")
+    hud:SetScript("OnDragStart", function() hud:StartMoving() end)
+    hud:SetScript("OnDragStop", function() hud:StopMovingOrSizing(); SaveHUDPlacement() end)
+
+    -- Close button — clears the "Show HUD" flag (no auto-show, so it stays closed until re-enabled).
+    local closeBtn = CreateFrame("Button", nil, hudHeader, "BackdropTemplate")
+    closeBtn:SetSize(16, 16)
+    closeBtn:SetPoint("RIGHT", hudHeader, "RIGHT", -3, 0)
+    ApplyFlat(closeBtn, THEME.field, true)
+    local closeX = closeBtn:CreateFontString(nil, "OVERLAY")
+    ApplyFont(closeX, 13)
+    closeX:SetPoint("CENTER")
+    closeX:SetText("X")
+    closeX:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    closeBtn:SetScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+        closeX:SetTextColor(0.78, 0.78, 1.0)
+    end)
+    closeBtn:SetScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
+        closeX:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    end)
+    closeBtn:SetScript("OnClick", function() if WQ.DismissRangeHUD then WQ.DismissRangeHUD() end end)
+
+    -- Format the bracket returned by WQ.GetTargetRange(), always parenthesised: "(8-10)" / "(>45)"
+    -- / "(0-8)" / "(?)".
+    local function FormatRange(lo, hi)
+        if not lo and not hi then return "(?)" end
+        if not hi then return ("(>%d)"):format(lo) end
+        if lo == 0 then return ("(0-%d)"):format(hi) end
+        return ("(%d-%d)"):format(lo, hi)
+    end
+
+    -- Visibility / content. want = active AND the persistent "open" flag. Stays visible while open
+    -- (shows "No target" when untargeted) — no data gate, unlike the consumables strip.
+    local function Evaluate()
+        if not WQ.IsRangeActive() then hud:Hide(); return end
+        local d = HUDdb()
+        if not (d and d.open) then hud:Hide(); return end
+
+        local name, lo, hi = WQ.GetTargetRange()
+        if not name then
+            -- No target: hide entirely if the user opted in, else show a placeholder.
+            if WQ.IsRangeHideNoTarget and WQ.IsRangeHideNoTarget() then hud:Hide(); return end
+            nameFS:SetText("No target")
+            rangeFS:SetText("")
+        else
+            nameFS:SetText(name)
+            rangeFS:SetText(FormatRange(lo, hi))
+        end
+        if not hud:IsShown() then hud:Show() end
+    end
+    WQ.UpdateRangeHUDVisibility = Evaluate
+    WQ.RefreshRangeHUD = Evaluate
+
+    -- Driver: a lightweight frame re-reads the range a few times a second while the feature is active,
+    -- so the bracket updates as you move. Stopped when the feature/master switch is off.
+    local driver = CreateFrame("Frame", nil, UIParent)
+    local acc = 0
+    local function OnDriver(_, elapsed)
+        acc = acc + elapsed
+        if acc < 0.4 then return end
+        acc = 0
+        Evaluate()
+    end
+    function WQ.UpdateRangeRegistration()
+        if WQ.IsRangeActive() then
+            driver:SetScript("OnUpdate", OnDriver)
+        else
+            driver:SetScript("OnUpdate", nil)
+            hud:Hide()
+        end
+    end
+
+    -- Manual open/close: the "Show HUD" toggle, the HUD's X button, and /run ToggleRangeHUD().
+    function WQ.IsRangeHUDOpen() local d = HUDdb(); return d and d.open or false end
+    function WQ.SetRangeHUDOpen(on)
+        local d = HUDdb(); if d then d.open = on and true or false end
+        Evaluate()
+        if WQ.SyncRangePage then WQ.SyncRangePage() end   -- keep the page's checkbox in step (X button)
+    end
+    function WQ.ToggleRangeHUD() WQ.SetRangeHUDOpen(not WQ.IsRangeHUDOpen()) end
+    function WQ.DismissRangeHUD() WQ.SetRangeHUDOpen(false) end   -- the HUD's X button
+
+    -- Apply the user's font size to both text lines and re-flow the frame around them. When
+    -- transparent (no header), the text starts near the top; otherwise it sits below the header.
+    -- Called on login, on the font-size setter, and whenever transparency toggles.
+    function WQ.ApplyRangeFont()
+        local sz = (WQ.GetRangeFontSize and WQ.GetRangeFontSize()) or 16
+        ApplyFont(nameFS,  sz, "OUTLINE")
+        ApplyFont(rangeFS, sz, "OUTLINE")
+        local transparent = WQ.IsRangeTransparent and WQ.IsRangeTransparent()
+        local top = transparent and PAD or (PAD + HEADER_H + 6)   -- no header room when transparent
+        nameFS:ClearAllPoints()
+        nameFS:SetPoint("TOP", hud, "TOP", 0, -top)
+        local lineH = sz + 6                                      -- approx rendered line height
+        hud:SetHeight(top + lineH + 2 + lineH + PAD)
+    end
+
+    -- Transparent mode: drop the frame backdrop + hide the header, leaving only the text (still
+    -- draggable by its now-invisible area). Off restores the flat frame + 50% fill. Re-flows the
+    -- text either way (the header's presence changes where the text sits).
+    function WQ.ApplyRangeTransparency()
+        if WQ.IsRangeTransparent and WQ.IsRangeTransparent() then
+            hud:SetBackdrop(nil)
+            hudHeader:Hide()
+        else
+            ApplyFlat(hud, THEME.bg, true)
+            hud:SetBackdropColor(THEME.bg[1], THEME.bg[2], THEME.bg[3], 0.5)
+            hudHeader:Show()
+        end
+        WQ.ApplyRangeFont()
+    end
+
+    -- Called from PLAYER_LOGIN (DB ready): restore position, start the driver if on, apply visibility.
+    function WQ.InitRangeHUD()
+        RestoreHUDPlacement()
+        WQ.ApplyRangeTransparency()   -- also applies the font + layout
+        WQ.UpdateRangeRegistration()
         Evaluate()
     end
 end

@@ -145,6 +145,13 @@ local function InitProfile(p)
     if p.consumeTransparent == nil then p.consumeTransparent = false end  -- hide HUD frame/header, icons only
     if p.consumeThreshold   == nil then p.consumeThreshold   = 120  end
     if not p.trackedConsumes then p.trackedConsumes = {} end
+    -- Range Indicator: manual on/off tool (default enabled here, but its HUD.open defaults OFF so
+    -- nothing shows until the user ticks Show HUD). rangeTransparent (text-only, no frame/header)
+    -- defaults ON for the clean WeakAura-style look. rangeFontSize = name/value text size (points).
+    if p.rangeEnabled      == nil then p.rangeEnabled      = true  end
+    if p.rangeTransparent  == nil then p.rangeTransparent  = true  end
+    if p.rangeHideNoTarget == nil then p.rangeHideNoTarget = false end  -- on = hide HUD when untargeted
+    if p.rangeFontSize     == nil then p.rangeFontSize     = 16    end
     -- Ensure every pet family has a lines table, even if empty.
     for _, family in ipairs(WQ.PET_FAMILIES) do
         if not p.lines[family] then p.lines[family] = {} end
@@ -1216,6 +1223,8 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
         if WQ.InitConsumablesHUD then WQ.InitConsumablesHUD() end
 
+        if WQ.InitRangeHUD then WQ.InitRangeHUD() end
+
         if WQ.InitMinimap then WQ.InitMinimap() end
 
     elseif event == "UNIT_PET" then
@@ -1354,6 +1363,8 @@ function WQ.SetMasterEnabled(on)
     if WQ.UpdateTrackerHUDVisibility     then WQ.UpdateTrackerHUDVisibility()     end
     if WQ.UpdateConsumablesRegistration  then WQ.UpdateConsumablesRegistration()  end
     if WQ.UpdateConsumablesHUDVisibility then WQ.UpdateConsumablesHUDVisibility() end
+    if WQ.UpdateRangeRegistration        then WQ.UpdateRangeRegistration()        end
+    if WQ.UpdateRangeHUDVisibility       then WQ.UpdateRangeHUDVisibility()       end
 end
 
 -- ── Raid CD Tracker public API ────────────────────────────────────────────────
@@ -1580,6 +1591,196 @@ function WQ.DebugDumpConsumables()
     for _, r in ipairs(WQ.GetConsumableSnapshot()) do
         local rem = r.remaining > 0 and (math.floor(r.remaining) .. "s") or "-"
         print(("  %s: %s (present=%s, rem=%s)"):format(r.label, r.status, tostring(r.present), rem))
+    end
+end
+
+-- ── Range Indicator (detection core) ──────────────────────────────────────────
+-- LOCAL only: reports a bracketed distance (min–max yards) to the current target, feeding the Range
+-- HUD. WoW gives no exact distance — only yes/no "is the unit within checker X's range?" via
+-- IsItemInRange (fixed-range items) / UnitInRange. We stack a ladder of checkers at KNOWN ranges and
+-- report the tightest bracket the target is in. Same principle + data as LibRangeCheck (the item lists
+-- are replicated public data, NOT the library, so we stay dependency-free — like the LibDBIcon math).
+--
+-- ITEMS ONLY, no warlock spells: a spell's range shifts with talents (Destructive Reach 30→36 on Shadow
+-- Bolt, Grim Reach +20% on affliction spells), which would report a WRONG fixed yard value. Items have
+-- a fixed range, so they never lie. Each RUNG lists MULTIPLE candidate item IDs (a rung resolves if ANY
+-- candidate is a working checker on this client) — this is what keeps the bracket tight (a single dead/
+-- un-cached item at 15 or 20yd would otherwise open a big gap). Bucket = the tightest 5yd step we can
+-- hit; where every rung resolves, brackets stay 5 wide like the reference WeakAura.
+
+-- Harmful checkers (ATTACKABLE unit), rung → candidate item IDs, ascending. TBC-available only.
+local RANGE_HARM = {
+    {   5, { 8149 } },                 -- Voodoo Charm
+    {   8, { 34368, 33278 } },         -- Attuned Crystal Cores / Burning Torch
+    {  10, { 32321, 17626 } },         -- Sparrowhawk Net / Frostwolf Muzzle
+    {  15, { 33069 } },                -- Sturdy Rope
+    {  20, { 10645 } },                -- Gnomish Death Ray
+    {  25, { 24268, 31463, 13289 } },  -- Netherweave Net / Zezzak's Shard / Egan's Blaster
+    {  30, { 835, 7734 } },            -- Large Rope Net / Six Demon Bag
+    {  35, { 24269, 18904 } },         -- Heavy Netherweave Net / Zorbin's Ultra-Shrinker
+    {  40, { 28767 } },                -- The Decapitator
+    {  45, { 23836 } },                -- Goblin Rocket Launcher
+    {  60, { 32825 } },                -- Soul Cannon (ceiling: anything past 60yd is well beyond
+                                       -- warlock cast range, so ">60" is enough)
+}
+-- Friendly checkers (nets/harm items return nil on a friend, so friends need their own set). The 40yd
+-- UnitInRange (group members only) is added at runtime as a reliable anchor.
+local RANGE_FRIEND = {
+    {   5, { 8149 } },                 -- Voodoo Charm
+    {   8, { 34368, 33278 } },         -- Attuned Crystal Cores / Burning Torch
+    {  10, { 32321, 17626 } },         -- Sparrowhawk Net / Frostwolf Muzzle
+    {  15, { 21990, 34721, 14529, 14530 } },  -- bandages (Netherweave/Heavy Netherweave/Runecloth)
+    {  20, { 21519 } },                -- Mistletoe (the only 20yd friendly checker; resolves year-round)
+    {  25, { 31463, 13289 } },         -- Zezzak's Shard / Egan's Blaster
+    {  30, { 1180, 1478 } },           -- Scroll of Stamina / Scroll of Spirit
+    {  35, { 18904 } },                -- Zorbin's Ultra-Shrinker
+    {  40, { 34471 } },                -- Vial of the Sunwell
+    {  45, { 32698 } },                -- Wrangling Rope
+    {  60, { 32825 } },                -- Soul Cannon (ceiling)
+}
+
+-- Feature active for this character (master switch + per-profile flag).
+local function RangeActive()
+    return FeatureOn("rangeEnabled")
+end
+
+-- IsItemInRange returns nil until the item is cached; GetItemInfo requests the load. So keep warming
+-- every call until all items resolve (then stop) — self-heals the "gap in the first few seconds" case.
+-- The attempt cap stops the loop even if an item never resolves (e.g. a bad ID not in this client's
+-- DB) so it can't retry forever; every VALID item caches within seconds.
+local rangeAllCached, rangeWarmAttempts = false, 0
+local RANGE_WARM_MAX_ATTEMPTS = 40
+local function WarmRange()
+    if rangeAllCached then return end
+    rangeWarmAttempts = rangeWarmAttempts + 1
+    local missing = 0
+    for _, ladder in ipairs({ RANGE_HARM, RANGE_FRIEND }) do
+        for _, rung in ipairs(ladder) do
+            for _, id in ipairs(rung[2]) do
+                if not GetItemInfo(id) then missing = missing + 1 end
+            end
+        end
+    end
+    if missing == 0 or rangeWarmAttempts >= RANGE_WARM_MAX_ATTEMPTS then rangeAllCached = true end
+end
+
+-- Resolve one rung against a unit: try each candidate item; the first that returns non-nil wins
+-- → true (in range) / false (out of range). nil = no candidate resolved (rung is a gap this call).
+local function RungResult(ids, unit)
+    for _, id in ipairs(ids) do
+        local r = IsItemInRange(id, unit)
+        if r ~= nil then return r and true or false end
+    end
+    return nil
+end
+
+-- Bracket the current target's distance. Returns:
+--   nil            → no target
+--   name, lo, hi   → lo < dist ≤ hi (lo defaults 0 = within the smallest checker; hi nil = beyond
+--                    the furthest checker, i.e. ">lo")
+--   name, nil, nil → have a target but no checker resolved (unknown)
+function WQ.GetTargetRange()
+    local unit = "target"
+    if not UnitExists(unit) then return nil end
+    local name = UnitName(unit) or "?"
+
+    WarmRange()
+    local harm   = UnitCanAttack("player", unit)
+    local ladder = harm and RANGE_HARM or RANGE_FRIEND
+
+    -- Accumulate: lo = largest OUT-of-range rung, hi = smallest IN-range rung. nil rungs skip.
+    -- OUT rungs only count while no IN has been seen yet (ascending order → the first IN is the
+    -- boundary; a later "OUT" at a larger range is checker disagreement, not real, so ignore it).
+    local lo, hi, any = 0, nil, false
+    local function consider(yards, res)
+        if res == nil then return end
+        any = true
+        if res then
+            if hi == nil or yards < hi then hi = yards end
+        elseif hi == nil and yards > lo then
+            lo = yards
+        end
+    end
+
+    -- Friendly group members get the reliable ~40yd UnitInRange anchor first.
+    if not harm and UnitInRange and (UnitInParty(unit) or UnitInRaid(unit)) then
+        consider(40, UnitInRange(unit) and true or false)
+    end
+    for _, rung in ipairs(ladder) do consider(rung[1], RungResult(rung[2], unit)) end
+
+    if not any then return name, nil, nil end
+    if hi and lo >= hi then lo = 0 end   -- guard an impossible bracket from checker disagreement
+    return name, lo, hi
+end
+
+-- ── Range Indicator public API ─────────────────────────────────────────────────
+function WQ.IsRangeActive() return RangeActive() end
+
+-- Enabled flag (per-profile). HUD hooks are called defensively (nil pre-UI).
+function WQ.IsRangeEnabled() local p = ActiveProfile(); return p and p.rangeEnabled or false end
+function WQ.SetRangeEnabled(on)
+    local p = ActiveProfile()
+    if p then p.rangeEnabled = on and true or false end
+    if WQ.UpdateRangeRegistration   then WQ.UpdateRangeRegistration()   end
+    if WQ.UpdateRangeHUDVisibility  then WQ.UpdateRangeHUDVisibility()  end
+end
+
+-- Per-profile "transparent mode" flag. On = drop the HUD frame background/border + header (text only).
+function WQ.IsRangeTransparent() local p = ActiveProfile(); return p and p.rangeTransparent or false end
+function WQ.SetRangeTransparent(on)
+    local p = ActiveProfile(); if p then p.rangeTransparent = on and true or false end
+    if WQ.ApplyRangeTransparency then WQ.ApplyRangeTransparency() end
+end
+
+-- Per-profile "hide when no target" flag. On = the HUD disappears entirely with no target (default
+-- off = stays put showing "No target").
+function WQ.IsRangeHideNoTarget() local p = ActiveProfile(); return p and p.rangeHideNoTarget or false end
+function WQ.SetRangeHideNoTarget(on)
+    local p = ActiveProfile(); if p then p.rangeHideNoTarget = on and true or false end
+    if WQ.UpdateRangeHUDVisibility then WQ.UpdateRangeHUDVisibility() end
+end
+
+-- Per-profile HUD text size (points), for the target name + range value. Clamped to a sane range.
+local RANGE_FONT_MIN, RANGE_FONT_MAX = 8, 40
+function WQ.GetRangeFontSize()
+    local p = ActiveProfile()
+    local v = p and p.rangeFontSize
+    if type(v) ~= "number" then return 16 end
+    if v < RANGE_FONT_MIN then return RANGE_FONT_MIN end
+    if v > RANGE_FONT_MAX then return RANGE_FONT_MAX end
+    return v
+end
+function WQ.SetRangeFontSize(n)
+    n = tonumber(n); if not n then return end
+    n = math.floor(n + 0.5)
+    if n < RANGE_FONT_MIN then n = RANGE_FONT_MIN end
+    if n > RANGE_FONT_MAX then n = RANGE_FONT_MAX end
+    local p = ActiveProfile(); if p then p.rangeFontSize = n end
+    if WQ.ApplyRangeFont then WQ.ApplyRangeFont() end
+end
+
+-- Debug dump (/run Warlock_Qol_Tbc.DebugDumpRange()): the current target's bracket PLUS every rung's
+-- result (in/out/— with the item ID that resolved it). Use it to spot a dead rung (all candidates "—",
+-- i.e. a gap) so its item IDs can be swapped for working ones during tuning.
+function WQ.DebugDumpRange()
+    print(("|cff9900ffWarlockQol|r Range — active: %s, items cached: %s"):format(
+        RangeActive() and "yes" or "no", rangeAllCached and "yes" or "no"))
+    if not UnitExists("target") then print("  (no target)") ; return end
+
+    local name, lo, hi = WQ.GetTargetRange()
+    local bracket = (not lo and not hi) and "unknown" or (not hi and (">"..lo) or (lo.."-"..hi))
+    print(("  %s → (%s yd)"):format(name or "?", bracket))
+
+    local harm   = UnitCanAttack("player", "target")
+    local ladder = harm and RANGE_HARM or RANGE_FRIEND
+    print(("  reaction: %s"):format(harm and "harm" or "friend"))
+    for _, rung in ipairs(ladder) do
+        local shown = nil
+        for _, id in ipairs(rung[2]) do
+            local r = IsItemInRange(id, "target")
+            if r ~= nil then shown = (r and "IN  via " or "OUT via ") .. id; break end
+        end
+        print(("    %3dyd: %s"):format(rung[1], shown or "— (no candidate resolved)"))
     end
 end
 
@@ -1841,7 +2042,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "banishEnabled", "trackerEnabled", "trackerShowRaid", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeGlow", "consumeTransparent" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "banishEnabled", "trackerEnabled", "trackerShowRaid", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)
@@ -1902,6 +2103,10 @@ local function SanitizeProfile(raw)
     -- consumable expiry threshold (seconds) — only a sane number travels; InitProfile defaults it.
     if type(raw.consumeThreshold) == "number" and raw.consumeThreshold >= 5 and raw.consumeThreshold <= 3600 then
         p.consumeThreshold = math.floor(raw.consumeThreshold)
+    end
+    -- range HUD text size (points) — only a sane number travels; InitProfile defaults it.
+    if type(raw.rangeFontSize) == "number" and raw.rangeFontSize >= 8 and raw.rangeFontSize <= 40 then
+        p.rangeFontSize = math.floor(raw.rangeFontSize)
     end
     return p
 end
