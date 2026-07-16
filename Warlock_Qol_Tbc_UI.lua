@@ -64,6 +64,43 @@ local THEME = {
 }
 local HEX_ACCENT = "8788ee"  -- Warlock class colour, matches THEME.accent
 
+-- ── Accent colour (user-settable on the Settings page) ───────────────────────────
+-- THEME.accent is mutated IN PLACE so the many handlers that read it live (hover borders, checkbox
+-- state, nav highlight, row select) pick up a change on their next fire for free. The set-once
+-- elements can't, so accentAppliers holds a re-tint closure per element (registered via AccentText/
+-- AccentFill/RegisterAccent); WQ.ReapplyAccent mutates the colour then runs them all.
+local accentAppliers = {}
+
+local function HexToRGB(hex)
+    return (tonumber(hex:sub(1, 2), 16) or 135) / 255,
+           (tonumber(hex:sub(3, 4), 16) or 136) / 255,
+           (tonumber(hex:sub(5, 6), 16) or 238) / 255
+end
+local function RGBToHex(r, g, b)
+    return ("%02x%02x%02x"):format(math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5))
+end
+
+-- Colour a fontstring / texture with the accent AND register it for re-tint on accent change.
+local function AccentText(fs)
+    local fn = function() fs:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3]) end
+    accentAppliers[#accentAppliers + 1] = fn; fn(); return fs
+end
+local function AccentFill(tex, alpha)
+    local fn = function() tex:SetColorTexture(THEME.accent[1], THEME.accent[2], THEME.accent[3], alpha or 1) end
+    accentAppliers[#accentAppliers + 1] = fn; fn(); return tex
+end
+-- Register a caller-supplied re-tint fn for state-driven bits (checkbox refresh, HUD padlock/rows,
+-- the brand string). Runs it once now, and again on every accent change.
+local function RegisterAccent(fn) accentAppliers[#accentAppliers + 1] = fn; fn() end
+
+-- Mutate THEME.accent + HEX_ACCENT to the active profile's colour, then repaint every accented element.
+function WQ.ReapplyAccent()
+    local hex = (WQ.GetAccent and WQ.GetAccent()) or HEX_ACCENT
+    THEME.accent[1], THEME.accent[2], THEME.accent[3] = HexToRGB(hex)
+    HEX_ACCENT = hex
+    for _, fn in ipairs(accentAppliers) do fn() end
+end
+
 -- ── Font ─────────────────────────────────────────────────────────────────────
 -- The active UI font is chosen on the Settings page (a key into WQ.FONTS, stored per-profile). All
 -- choices are stock client fonts (nothing bundled). CURRENT_FONT is the resolved path; the Settings
@@ -196,7 +233,10 @@ logo:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 local brand = titleBar:CreateFontString(nil, "OVERLAY")
 ApplyFont(brand, 15)
 brand:SetPoint("LEFT", logo, "RIGHT", 6, 0)
-brand:SetText(("|cff%sWarlockQol (TBC)|r  |cff888888v%s|r"):format(HEX_ACCENT, AddonVersion()))
+-- Re-set on accent change (the brand bakes HEX_ACCENT into a |c…| colour code).
+RegisterAccent(function()
+    brand:SetText(("|cff%sWarlockQol (TBC)|r  |cff888888v%s|r"):format(HEX_ACCENT, AddonVersion()))
+end)
 
 -- Themed flat close button: a purple "X" on the flat field; hover brightens it; click hides the window.
 local closeBtn = CreateFrame("Button", nil, titleBar, "BackdropTemplate")
@@ -208,7 +248,7 @@ local closeX = closeBtn:CreateFontString(nil, "OVERLAY")
 ApplyFont(closeX, 15)
 closeX:SetPoint("CENTER")
 closeX:SetText("X")
-closeX:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+AccentText(closeX)
 
 closeBtn:SetScript("OnEnter", function(self)
     self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
@@ -241,7 +281,7 @@ content:SetPoint("BOTTOMRIGHT", f,       "BOTTOMRIGHT", -PAD, PAD)
 local pageTitle = content:CreateFontString(nil, "OVERLAY")
 ApplyFont(pageTitle, 16)
 pageTitle:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -6)
-pageTitle:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+AccentText(pageTitle)
 
 -- Forward-declared (created later, once StyleCheckbox exists) so ShowPage/NewPage capture them.
 local pageSubtitle, pageDivider, enableCheck, enableLabel
@@ -491,7 +531,7 @@ local function StyleCheckbox(cb)
         local c = cb:GetChecked() and THEME.accent or THEME.offRed
         fill:SetVertexColor(c[1], c[2], c[3])
     end
-    cb.RefreshStateColor()
+    RegisterAccent(cb.RefreshStateColor)   -- re-run on accent change (ON state uses accent)
 end
 
 -- ── Flat dropdown widget ────────────────────────────────────────────────────────
@@ -566,7 +606,7 @@ local function MakeDropdown(parent, width)
                 r:SetHeight(DD_ROW_H)
                 local hl = r:CreateTexture(nil, "HIGHLIGHT")
                 hl:SetAllPoints()
-                hl:SetColorTexture(THEME.accent[1], THEME.accent[2], THEME.accent[3], 0.20)
+                AccentFill(hl, 0.20)
                 local rfs = r:CreateFontString(nil, "OVERLAY")
                 ApplyFont(rfs, 12)
                 rfs:SetPoint("LEFT",  r, "LEFT",   8, 0)
@@ -1524,7 +1564,7 @@ do
     local shareHdr = profiles:CreateFontString(nil, "OVERLAY")
     ApplyFont(shareHdr, 12)
     shareHdr:SetPoint("TOPLEFT", profiles, "TOPLEFT", LABEL_X, -206)
-    shareHdr:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(shareHdr)
     shareHdr:SetText("SHARE PROFILE")
 
     -- Export row: pick a profile + Export → fills the box below; Clear empties it once copied.
@@ -1678,7 +1718,7 @@ do
     -- Section 1 — Reset Macros (accent heading).
     local h1 = reset:CreateFontString(nil, "OVERLAY")
     ApplyFont(h1, 13)
-    h1:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(h1)
     h1:SetPoint("TOPLEFT", reset, "TOPLEFT", PAD_L, -6)
     h1:SetText("Reset Macros")
 
@@ -1732,7 +1772,7 @@ do
     -- Section 3 — Setup Guide (re-open the first-run wizard; non-destructive, accent heading).
     local h3 = reset:CreateFontString(nil, "OVERLAY")
     ApplyFont(h3, 13)
-    h3:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(h3)
     h3:SetPoint("TOPLEFT", reset, "TOPLEFT", PAD_L, -274)
     h3:SetText("Setup Guide")
 
@@ -1788,7 +1828,7 @@ do
     local function Heading(text, y)
         local h = track:CreateFontString(nil, "OVERLAY")
         ApplyFont(h, 13)
-        h:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+        AccentText(h)
         h:SetPoint("TOPLEFT", track, "TOPLEFT", PAD_L, y)
         h:SetText(text)
         return h
@@ -1891,7 +1931,7 @@ do
     local function Heading(text, y)
         local h = cons:CreateFontString(nil, "OVERLAY")
         ApplyFont(h, 13)
-        h:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+        AccentText(h)
         h:SetPoint("TOPLEFT", cons, "TOPLEFT", PAD_L, y)
         h:SetText(text)
         return h
@@ -2021,7 +2061,7 @@ do
     local function Heading(text, y)
         local h = rng:CreateFontString(nil, "OVERLAY")
         ApplyFont(h, 13)
-        h:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+        AccentText(h)
         h:SetPoint("TOPLEFT", rng, "TOPLEFT", PAD_L, y)
         h:SetText(text)
         return h
@@ -2109,7 +2149,7 @@ do
 
     local fontHdr = settings:CreateFontString(nil, "OVERLAY")
     ApplyFont(fontHdr, 13)
-    fontHdr:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(fontHdr)
     fontHdr:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -6)
     fontHdr:SetText("Font")
 
@@ -2154,6 +2194,104 @@ do
         fontDD:SetValue(o and o.label or "")
     end
     syncers[#syncers + 1] = RefreshFontDD
+
+    -- ── Accent colour ────────────────────────────────────────────────────────────
+    local accentRule = settings:CreateTexture(nil, "ARTWORK")
+    accentRule:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
+    accentRule:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -100)
+    accentRule:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -100)
+    accentRule:SetHeight(1)
+
+    local accentHdr = settings:CreateFontString(nil, "OVERLAY")
+    ApplyFont(accentHdr, 13)
+    AccentText(accentHdr)
+    accentHdr:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -114)
+    accentHdr:SetText("Accent colour")
+
+    local accentCap = settings:CreateFontString(nil, "OVERLAY")
+    ApplyFont(accentCap, 11)
+    accentCap:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+    accentCap:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -134)
+    accentCap:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -134)
+    accentCap:SetJustifyH("LEFT")
+    accentCap:SetText("The highlight colour used across the addon for selections, headings and borders. " ..
+                      "Click the swatch to choose your own; the picker previews live.")
+
+    local accentLabel = settings:CreateFontString(nil, "OVERLAY")
+    ApplyFont(accentLabel, 12)
+    accentLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+    accentLabel:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -176)
+    accentLabel:SetText("Accent colour")
+
+    -- Full-screen catcher so a click OFF the picker cancels it (and stops it dropping behind the app).
+    -- Strata layering: catcher on FULLSCREEN (above the app's DIALOG window), picker raised to
+    -- FULLSCREEN_DIALOG (above the catcher, so the picker's own controls stay clickable).
+    local pickerCatcher = CreateFrame("Button", nil, UIParent)
+    pickerCatcher:SetAllPoints(UIParent)
+    pickerCatcher:SetFrameStrata("FULLSCREEN")
+    pickerCatcher:Hide()
+    ColorPickerFrame:HookScript("OnHide", function() pickerCatcher:Hide() end)
+
+    -- Open the stock colour picker seeded to startHex; apply(hex) fires live while dragging, and on
+    -- cancel (button OR click-away) we restore startHex. Shim: retail uses SetupColorPickerAndShow,
+    -- TBC/Classic the .func + .cancelFunc + .previousValues fields. No opacity (accent is opaque).
+    local function OpenAccentPicker(startHex, apply)
+        local r0, g0, b0 = HexToRGB(startHex)
+        local function onChange()
+            local r, g, b = ColorPickerFrame:GetColorRGB()
+            apply(RGBToHex(r, g, b))
+        end
+        local function onCancel() apply(startHex) end
+        pickerCatcher:SetScript("OnClick", function()
+            onCancel()
+            ColorPickerFrame:Hide()   -- OnHide hook hides the catcher
+        end)
+        if ColorPickerFrame.SetupColorPickerAndShow then
+            ColorPickerFrame:SetupColorPickerAndShow({
+                r = r0, g = g0, b = b0, hasOpacity = false,
+                swatchFunc = onChange, cancelFunc = onCancel,
+            })
+        else
+            ColorPickerFrame.func       = onChange
+            ColorPickerFrame.swatchFunc = onChange
+            ColorPickerFrame.cancelFunc = onCancel
+            ColorPickerFrame.hasOpacity = false
+            ColorPickerFrame.previousValues = { r0, g0, b0 }
+            ColorPickerFrame:SetColorRGB(r0, g0, b0)
+            ColorPickerFrame:Hide()   -- force OnShow to re-init with our values
+            ColorPickerFrame:Show()
+        end
+        ColorPickerFrame:SetFrameStrata("FULLSCREEN_DIALOG")   -- keep above the app + the catcher
+        pickerCatcher:Show()
+    end
+
+    -- Clickable swatch showing the current accent; opens the picker.
+    local swatch = CreateFrame("Button", nil, settings, "BackdropTemplate")
+    swatch:SetSize(24, 24)
+    swatch:SetPoint("LEFT", accentLabel, "RIGHT", 10, 0)
+    ApplyFlat(swatch, THEME.field, true)
+    local swatchFill = swatch:CreateTexture(nil, "ARTWORK")
+    swatchFill:SetPoint("TOPLEFT",     swatch, "TOPLEFT",      3, -3)
+    swatchFill:SetPoint("BOTTOMRIGHT", swatch, "BOTTOMRIGHT", -3,  3)
+    local function RefreshSwatch() swatchFill:SetColorTexture(HexToRGB(WQ.GetAccent())) end
+    swatch:SetScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    end)
+    swatch:SetScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
+    end)
+    swatch:SetScript("OnClick", function()
+        OpenAccentPicker(WQ.GetAccent(), function(hex) WQ.SetAccent(hex); RefreshSwatch() end)
+    end)
+
+    local resetBtn = MakeFlatButton(settings, "Reset to default")
+    resetBtn:SetSize(120, 24)
+    resetBtn:SetPoint("LEFT", swatch, "RIGHT", 12, 0)
+    resetBtn:SetScript("OnClick", function()
+        WQ.SetAccent(WQ.DEFAULT_ACCENT); RefreshSwatch()
+    end)
+
+    syncers[#syncers + 1] = RefreshSwatch
 
     function WQ.SyncSettingsPage()
         for _, sync in ipairs(syncers) do sync() end
@@ -2218,14 +2356,14 @@ do
             -- Gold selection fill (hidden unless this item is the current page).
             local sel = b:CreateTexture(nil, "BACKGROUND")
             sel:SetAllPoints()
-            sel:SetColorTexture(THEME.accent[1], THEME.accent[2], THEME.accent[3], 1)
+            AccentFill(sel, 1)
             sel:Hide()
             b.sel = sel
 
             -- Hover highlight (faint gold) for unselected items.
             local hov = b:CreateTexture(nil, "HIGHLIGHT")
             hov:SetAllPoints()
-            hov:SetColorTexture(THEME.accent[1], THEME.accent[2], THEME.accent[3], 0.12)
+            AccentFill(hov, 0.12)
 
             local fs = b:CreateFontString(nil, "OVERLAY")
             ApplyFont(fs, 12)
@@ -2310,7 +2448,7 @@ do
     local hudTitle = hudHeader:CreateFontString(nil, "OVERLAY")
     ApplyFont(hudTitle, 12)
     hudTitle:SetPoint("LEFT", hudHeader, "LEFT", 6, 0)
-    hudTitle:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(hudTitle)
     hudTitle:SetText("Raid Cooldowns")
 
     -- Persistence (position + shown + locked) — a top-level DB table like `ui`.
@@ -2350,7 +2488,7 @@ do
     ApplyFont(closeX, 13)
     closeX:SetPoint("CENTER")
     closeX:SetText("X")
-    closeX:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(closeX)
     closeBtn:SetScript("OnEnter", function(self)
         self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
         closeX:SetTextColor(0.78, 0.78, 1.0)
@@ -2378,7 +2516,12 @@ do
         local c = locked and THEME.accent or THEME.textDim
         lockTex:SetVertexColor(c[1], c[2], c[3])
     end
-    RefreshLockIcon()
+    -- Re-tint the padlock (accent when locked) and rebuild rows (own/selected row name uses accent) on
+    -- an accent change; RefreshTrackerHUD is defined later, so guard for the build-time first run.
+    RegisterAccent(function()
+        RefreshLockIcon()
+        if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+    end)
     lockBtn:SetScript("OnClick", function()
         local d = HUDdb()
         WQ.SetTrackerHUDLocked(not (d and d.locked))   -- setter repaints the icon
@@ -2712,7 +2855,7 @@ do
     local hudTitle = hudHeader:CreateFontString(nil, "OVERLAY")
     ApplyFont(hudTitle, 12)
     hudTitle:SetPoint("LEFT", hudHeader, "LEFT", 6, 0)
-    hudTitle:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(hudTitle)
     hudTitle:SetText("Missing Consumables")
 
     -- Persistence (position + open) — a top-level DB table like `trackerHUD`.
@@ -2750,7 +2893,7 @@ do
     ApplyFont(closeX, 13)
     closeX:SetPoint("CENTER")
     closeX:SetText("X")
-    closeX:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(closeX)
     closeBtn:SetScript("OnEnter", function(self)
         self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
         closeX:SetTextColor(0.78, 0.78, 1.0)
@@ -2984,7 +3127,7 @@ do
     local hudTitle = hudHeader:CreateFontString(nil, "OVERLAY")
     ApplyFont(hudTitle, 12)
     hudTitle:SetPoint("LEFT", hudHeader, "LEFT", 6, 0)
-    hudTitle:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(hudTitle)
     hudTitle:SetText("Range")
 
     -- Target name + range bracket, same white OUTLINE style (WeakAura look). Range anchors below the
@@ -3059,7 +3202,7 @@ do
     ApplyFont(closeX, 13)
     closeX:SetPoint("CENTER")
     closeX:SetText("X")
-    closeX:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(closeX)
     closeBtn:SetScript("OnEnter", function(self)
         self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
         closeX:SetTextColor(0.78, 0.78, 1.0)
@@ -3360,7 +3503,7 @@ do
     local title = wiz:CreateFontString(nil, "OVERLAY")
     ApplyFont(title, 16)
     title:SetPoint("TOPLEFT", wiz, "TOPLEFT", P, -P)
-    title:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    AccentText(title)
     title:SetText("Welcome to WarlockQol")
 
     local div = wiz:CreateTexture(nil, "ARTWORK")

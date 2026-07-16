@@ -116,6 +116,10 @@ local function DeepCopy(v)
     return out
 end
 
+-- Accent colour (Settings page). Stored per-profile as a 6-hex string; DEFAULT_ACCENT = Warlock purple
+-- (the "reset" target). The UI mutates THEME.accent + repaints via WQ.ReapplyAccent.
+WQ.DEFAULT_ACCENT = "8788ee"
+
 -- UI font choices (Settings page). key -> { label, path }; order = FONT_ORDER (alphabetical by label).
 -- All are stock client fonts (no bundling). The UI's ApplyFont resolves the active key to a path.
 WQ.FONT_ORDER = { "arialn", "friz", "morpheus", "skurri" }
@@ -164,6 +168,8 @@ local function InitProfile(p)
     if p.rangeFontSize     == nil then p.rangeFontSize     = 16    end
     -- Settings: UI font (a key into WQ.FONTS; default = the stock Arial Narrow).
     if p.font == nil then p.font = "arialn" end
+    -- Settings: accent colour (6-hex; default = Warlock purple).
+    if p.accent == nil then p.accent = WQ.DEFAULT_ACCENT end
     -- Ensure every pet family has a lines table, even if empty.
     for _, family in ipairs(WQ.PET_FAMILIES) do
         if not p.lines[family] then p.lines[family] = {} end
@@ -1240,6 +1246,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if WQ.InitMinimap then WQ.InitMinimap() end
 
         if WQ.ReapplyFont then WQ.ReapplyFont() end   -- apply the active profile's saved font choice
+        if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- apply the active profile's saved accent colour
 
     elseif event == "UNIT_PET" then
         local unit = ...
@@ -1825,6 +1832,20 @@ function WQ.SetFont(key)
     if WQ.ReapplyFont then WQ.ReapplyFont() end   -- live repaint (defined in the UI file)
 end
 
+-- Per-profile accent colour (Settings page). Stored as a 6-hex string; the UI's WQ.ReapplyAccent
+-- mutates THEME.accent and repaints every accented element.
+function WQ.GetAccent()
+    local p = ActiveProfile()
+    local hex = p and p.accent
+    if type(hex) == "string" and hex:match("^%x%x%x%x%x%x$") then return hex:lower() end
+    return WQ.DEFAULT_ACCENT
+end
+function WQ.SetAccent(hex)
+    if type(hex) ~= "string" or not hex:match("^%x%x%x%x%x%x$") then return end
+    local p = ActiveProfile(); if p then p.accent = hex:lower() end
+    if WQ.ReapplyAccent then WQ.ReapplyAccent() end   -- live repaint (defined in the UI file)
+end
+
 -- Debug dump (/run Warlock_Qol_Tbc.DebugDumpRange()): the current target's bracket PLUS every rung's
 -- result (in/out/— with the item ID that resolved it). Use it to spot a dead rung (all candidates "—",
 -- i.e. a gap) so its item IDs can be swapped for working ones during tuning.
@@ -1889,6 +1910,7 @@ function WQ.SwitchProfile(name)
     EnsureProfileSeeded()
     UpdateCombatLogRegistration()   -- the new profile's announcer flags may differ
     if WQ.ReapplyFont then WQ.ReapplyFont() end   -- the new profile may pick a different font
+    if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- ...and a different accent colour
     return true
 end
 
@@ -1961,6 +1983,7 @@ function WQ.HardReset()
 
     UpdateCombatLogRegistration()                -- listener state reset with the fresh (all-ON) flags
     if WQ.ReapplyFont then WQ.ReapplyFont() end  -- back to the default font
+    if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- back to the default accent colour
     print(("|cff9900ffWarlockQol|r: reset EVERYTHING to defaults (all profiles and settings) and removed %d macro(s)."):format(removed))
     return true
 end
@@ -2185,6 +2208,8 @@ local function SanitizeProfile(raw)
     end
     -- UI font (Settings) — only a known key travels; InitProfile defaults it.
     if type(raw.font) == "string" and WQ.FONTS[raw.font] then p.font = raw.font end
+    -- Accent colour (Settings) — only a well-formed 6-hex string travels; InitProfile defaults it.
+    if type(raw.accent) == "string" and raw.accent:match("^%x%x%x%x%x%x$") then p.accent = raw.accent:lower() end
     return p
 end
 
