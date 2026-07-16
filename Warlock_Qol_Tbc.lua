@@ -116,6 +116,16 @@ local function DeepCopy(v)
     return out
 end
 
+-- UI font choices (Settings page). key -> { label, path }; order = FONT_ORDER (alphabetical by label).
+-- All are stock client fonts (no bundling). The UI's ApplyFont resolves the active key to a path.
+WQ.FONT_ORDER = { "arialn", "friz", "morpheus", "skurri" }
+WQ.FONTS = {
+    arialn   = { label = "Arial Narrow",   path = "Fonts\\ARIALN.TTF" },
+    friz     = { label = "Friz Quadrata",  path = "Fonts\\FRIZQT__.TTF" },
+    morpheus = { label = "Morpheus",       path = "Fonts\\MORPHEUS.TTF" },
+    skurri   = { label = "Skurri",         path = "Fonts\\skurri.ttf" },
+}
+
 -- Ensure a profile has every config field (idempotent; heals old/partial profiles).
 local function InitProfile(p)
     p = p or {}
@@ -152,6 +162,8 @@ local function InitProfile(p)
     if p.rangeTransparent  == nil then p.rangeTransparent  = true  end
     if p.rangeHideNoTarget == nil then p.rangeHideNoTarget = false end  -- on = hide HUD when untargeted
     if p.rangeFontSize     == nil then p.rangeFontSize     = 16    end
+    -- Settings: UI font (a key into WQ.FONTS; default = the stock Arial Narrow).
+    if p.font == nil then p.font = "arialn" end
     -- Ensure every pet family has a lines table, even if empty.
     for _, family in ipairs(WQ.PET_FAMILIES) do
         if not p.lines[family] then p.lines[family] = {} end
@@ -1227,6 +1239,8 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
         if WQ.InitMinimap then WQ.InitMinimap() end
 
+        if WQ.ReapplyFont then WQ.ReapplyFont() end   -- apply the active profile's saved font choice
+
     elseif event == "UNIT_PET" then
         local unit = ...
         if unit ~= "player" then return end
@@ -1797,6 +1811,20 @@ function WQ.SetRangeFontSize(n)
     if WQ.ApplyRangeFont then WQ.ApplyRangeFont() end
 end
 
+-- Per-profile UI font (Settings page). Stored as a key into WQ.FONTS; the UI's WQ.ReapplyFont
+-- resolves it to a path and repaints every fontstring (menus + all HUDs) at once.
+function WQ.GetFont()
+    local p = ActiveProfile()
+    local key = p and p.font
+    if key and WQ.FONTS[key] then return key end
+    return "arialn"
+end
+function WQ.SetFont(key)
+    if not WQ.FONTS[key] then return end
+    local p = ActiveProfile(); if p then p.font = key end
+    if WQ.ReapplyFont then WQ.ReapplyFont() end   -- live repaint (defined in the UI file)
+end
+
 -- Debug dump (/run Warlock_Qol_Tbc.DebugDumpRange()): the current target's bracket PLUS every rung's
 -- result (in/out/— with the item ID that resolved it). Use it to spot a dead rung (all candidates "—",
 -- i.e. a gap) so its item IDs can be swapped for working ones during tuning.
@@ -1860,6 +1888,7 @@ function WQ.SwitchProfile(name)
     activeProfile = InitProfile(Warlock_Qol_Tbc_DB.profiles[name])
     EnsureProfileSeeded()
     UpdateCombatLogRegistration()   -- the new profile's announcer flags may differ
+    if WQ.ReapplyFont then WQ.ReapplyFont() end   -- the new profile may pick a different font
     return true
 end
 
@@ -1931,6 +1960,7 @@ function WQ.HardReset()
     ResolveActiveBinding()                       -- recreate this char's default-seeded profile + binding
 
     UpdateCombatLogRegistration()                -- listener state reset with the fresh (all-ON) flags
+    if WQ.ReapplyFont then WQ.ReapplyFont() end  -- back to the default font
     print(("|cff9900ffWarlockQol|r: reset EVERYTHING to defaults (all profiles and settings) and removed %d macro(s)."):format(removed))
     return true
 end
@@ -2153,6 +2183,8 @@ local function SanitizeProfile(raw)
     if type(raw.rangeFontSize) == "number" and raw.rangeFontSize >= 8 and raw.rangeFontSize <= 40 then
         p.rangeFontSize = math.floor(raw.rangeFontSize)
     end
+    -- UI font (Settings) — only a known key travels; InitProfile defaults it.
+    if type(raw.font) == "string" and WQ.FONTS[raw.font] then p.font = raw.font end
     return p
 end
 

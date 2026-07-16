@@ -39,6 +39,3 @@ WarlockQol (TBC) is free software: you can redistribute it and/or modify it unde
 the **GNU General Public License v3.0** as published by the Free Software Foundation. It is
 distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY. See the full license
 text in [`LICENSE`](LICENSE), or <https://www.gnu.org/licenses/gpl-3.0.html>.
-
-The bundled font **PT Sans** is licensed separately under the SIL Open Font License - see
-[`Fonts/OFL.txt`](Fonts/OFL.txt).

@@ -7,14 +7,14 @@ local WQ = Warlock_Qol_Tbc
 -- ── Window geometry ───────────────────────────────────────────────────────────
 local FRAME_W  = 800   -- default frame width (resizable)
 local FRAME_H  = 600   -- default frame height (resizable)
-local MIN_W, MIN_H = 600, 530   -- shrink limit (fits the 3-section nav, pinned buttons, Profiles Share section)
+local MIN_W, MIN_H = 600, 558   -- shrink limit (fits the 3-section nav, pinned buttons, Profiles Share section)
 local MAX_W, MAX_H = 940, 780   -- grow limit
 local ROW_H    = 26    -- height of each line entry in the scroll list
 local ROW_POOL = 24    -- row frames created per list (enough for MAX_H); visible count computed from list height
 
 local PAD        = 8    -- outer/gutter padding between the chrome pieces
 local TITLEBAR_H = 30   -- height of the top title strip (brand + close button)
-local SIDEBAR_W  = 150  -- fixed width of the left nav column
+local SIDEBAR_W  = 160  -- fixed width of the left nav column
 local NAV_H      = 26   -- height of each nav item
 
 -- Raid marker tokens → icon number in UI-RaidTargetingIcon_N (1–8), for the line-list preview.
@@ -65,28 +65,40 @@ local THEME = {
 local HEX_ACCENT = "8788ee"  -- Warlock class colour, matches THEME.accent
 
 -- ── Font ─────────────────────────────────────────────────────────────────────
--- Bundled PT Sans Narrow (OFL). Must degrade gracefully: SetFont returns false on a bad/missing
--- .ttf, so we fall back to a stock font. Always route text through ApplyFont so the fallback applies.
-local FONT_PATH    = "Interface\\AddOns\\Warlock_Qol_Tbc\\Fonts\\PTSansNarrow.ttf"
+-- The active UI font is chosen on the Settings page (a key into WQ.FONTS, stored per-profile). All
+-- choices are stock client fonts (nothing bundled). CURRENT_FONT is the resolved path; the Settings
+-- picker swaps it and calls WQ.ReapplyFont, which repaints every fontstring at once. SetFont returns
+-- false on a bad/missing .ttf, so we always fall back to a stock font. Default = Arial Narrow.
+local FONT_DEFAULT  = "Fonts\\ARIALN.TTF"
 local FONT_FALLBACK = STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+local CURRENT_FONT  = FONT_DEFAULT   -- active path (updated by WQ.ReapplyFont)
 
--- Bundled PT Sans Italic (real italic face — SetFont has no italic flag). Used for the empty-list message.
-local FONT_ITALIC_PATH = "Interface\\AddOns\\Warlock_Qol_Tbc\\Fonts\\PTSansItalic.ttf"
+-- Every styled fontstring is recorded here (keyed by the object, so re-styling just updates its entry)
+-- so a font swap can repaint the whole UI + all HUDs in one pass.
+local fontMeta = {}
 
--- Set obj's font to PT Sans Narrow (size in points, standard flag string), stock fallback on failure.
+-- Set obj's font to the active UI font (size in points, standard flag string), stock fallback on failure.
 local function ApplyFont(obj, size, flags)
     flags = flags or ""
-    local ok = obj:SetFont(FONT_PATH, size, flags)
-    if not ok then obj:SetFont(FONT_FALLBACK, size, flags) end
+    fontMeta[obj] = { size = size, flags = flags }
+    if not obj:SetFont(CURRENT_FONT, size, flags) then obj:SetFont(FONT_FALLBACK, size, flags) end
     return obj
 end
 
--- As ApplyFont but the italic face; falls back to the stock (upright) font if unavailable.
-local function ApplyFontItalic(obj, size, flags)
-    flags = flags or ""
-    local ok = obj:SetFont(FONT_ITALIC_PATH, size, flags)
-    if not ok then obj:SetFont(FONT_FALLBACK, size, flags) end
-    return obj
+-- Italic styling was dropped with the bundled PT Sans (stock fonts have no italic face); kept as an
+-- alias so the few former-italic callers (the quote, the empty-list messages) render in the active font.
+local ApplyFontItalic = ApplyFont
+
+-- Repaint every recorded fontstring with the active font. Called from the core on login, profile
+-- switch, hard reset, and when the Settings picker changes WQ.GetFont().
+function WQ.ReapplyFont()
+    local key = WQ.GetFont and WQ.GetFont() or "arialn"
+    local opt = WQ.FONTS and WQ.FONTS[key]
+    CURRENT_FONT = (opt and opt.path) or FONT_DEFAULT
+    for obj, m in pairs(fontMeta) do
+        if not obj:SetFont(CURRENT_FONT, m.size, m.flags) then obj:SetFont(FONT_FALLBACK, m.size, m.flags) end
+    end
+    if WQ.ApplyRangeFont then WQ.ApplyRangeFont() end   -- Range HUD width autosizes to the font
 end
 
 -- ── Flat-frame helper ───────────────────────────────────────────────────────────
@@ -576,6 +588,14 @@ local function MakeDropdown(parent, width)
             r:SetPoint("TOPLEFT",  list, "TOPLEFT",   2, -2 - (i - 1) * DD_ROW_H)
             r:SetPoint("TOPRIGHT", list, "TOPRIGHT", -2, -2 - (i - 1) * DD_ROW_H)
             r.fs:SetText(text)
+            -- Optional per-option font preview (the Settings font picker): render each row in its own
+            -- typeface. Raw SetFont + drop from fontMeta so WQ.ReapplyFont never repaints these previews.
+            local pf = dd.optionFonts and dd.optionFonts[i]
+            if pf and r.fs:SetFont(pf, 14, "") then
+                fontMeta[r.fs] = nil
+            else
+                ApplyFont(r.fs, 12)
+            end
             local capText = text   -- capture per-row for the closure
             r:SetScript("OnClick", function()
                 CloseList()
@@ -609,8 +629,9 @@ local function MakeDropdown(parent, width)
     end)
 
     -- Public API -----------------------------------------------------------------
-    function dd:SetOptions(l)
+    function dd:SetOptions(l, fonts)
         self.options = l or {}
+        self.optionFonts = fonts   -- optional parallel array of font paths for per-row previews
         self.empty = (#self.options == 0)
         if list:IsShown() then RebuildRows() end
     end
@@ -2076,6 +2097,70 @@ do
     rng.OnPageShow = WQ.SyncRangePage
 end
 
+-- ── Settings page (Settings) ───────────────────────────────────────────────────
+-- Cross-cutting look-and-feel options, saved to the active profile. First control: the UI font picker
+-- (WQ.SetFont repaints everything live via WQ.ReapplyFont). More may join here later.
+do
+    local settings = NewPage("settings", "Settings",
+        "Customise how the addon looks. These options are saved to the active profile.")
+
+    local PAD_L = 8
+    local syncers = {}
+
+    local fontHdr = settings:CreateFontString(nil, "OVERLAY")
+    ApplyFont(fontHdr, 13)
+    fontHdr:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    fontHdr:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -6)
+    fontHdr:SetText("Font")
+
+    local fontCap = settings:CreateFontString(nil, "OVERLAY")
+    ApplyFont(fontCap, 11)
+    fontCap:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+    fontCap:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -26)
+    fontCap:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -26)
+    fontCap:SetJustifyH("LEFT")
+    fontCap:SetText("Sets the font used across the whole addon: menus and HUDs. These fonts all " ..
+                    "come with the game.")
+
+    local fontLabel = settings:CreateFontString(nil, "OVERLAY")
+    ApplyFont(fontLabel, 12)
+    fontLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+    fontLabel:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -62)
+    fontLabel:SetText("UI font")
+
+    -- Map dropdown labels (what the user sees) to WQ.FONTS keys (what we store); the parallel paths
+    -- array lets each row preview in its own typeface.
+    local fontLabels, fontPaths, labelToKey = {}, {}, {}
+    for i, key in ipairs(WQ.FONT_ORDER) do
+        local o = WQ.FONTS[key]
+        fontLabels[i] = o.label
+        fontPaths[i]  = o.path
+        labelToKey[o.label] = key
+    end
+
+    local fontDD = MakeDropdown(settings, 180)
+    fontDD:SetPoint("LEFT", fontLabel, "RIGHT", 10, 0)
+    fontDD:SetOptions(fontLabels, fontPaths)
+    fontDD:SetOnSelect(function(text)
+        local key = labelToKey[text]
+        if key then
+            WQ.SetFont(key)          -- repaints the UI (incl. this dropdown's label) into the new font
+            fontDD:SetValue(text)    -- then show the new selection as the dropdown's value
+        end
+    end)
+
+    local function RefreshFontDD()
+        local o = WQ.FONTS[WQ.GetFont()]
+        fontDD:SetValue(o and o.label or "")
+    end
+    syncers[#syncers + 1] = RefreshFontDD
+
+    function WQ.SyncSettingsPage()
+        for _, sync in ipairs(syncers) do sync() end
+    end
+    settings.OnPageShow = WQ.SyncSettingsPage
+end
+
 -- ── Left nav items ────────────────────────────────────────────────────────────
 -- Nav buttons (one per page) grouped under non-interactive section headers, built after the pages so
 -- ShowPage is wired. Selected item = accent fill + dark text; rest transparent, accent on hover.
@@ -2090,13 +2175,14 @@ do
         { label = "Ritual of Summoning",    page = "ritual"    },
         { label = "Ritual of Souls",        page = "souls"     },
         { header = "ANNOUNCEMENTS" },
-        { label = "Soulstone Announcement", page = "soulstone" },
-        { label = "Banish Announcement",    page = "banish"    },
+        { label = "Soulstone",              page = "soulstone" },
+        { label = "Banish",                 page = "banish"    },
         { header = "RAID" },
         { label = "Raid Cooldowns",         page = "tracking"     },
-        { label = "Missing Consumables",    page = "consumables"  },
+        { label = "Consumables",            page = "consumables"  },
         { label = "Range Indicator",        page = "range"        },
         { header = "SETTINGS" },
+        { label = "Settings",               page = "settings"  },
         { label = "Profiles",               page = "profiles"  },
         { label = "Reset",                  page = "reset"     },
     }
