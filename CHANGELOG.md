@@ -2,7 +2,18 @@
 
 All notable player-facing changes are listed here, newest first.
 
----
+### [0.19] - 2026-07-17
+
+#### Added
+- New **Settings** page in the menu, for how the addon looks. Everything on it is saved to the
+  active profile, so your look travels with an exported profile.
+- **UI font**: pick the font used across the whole addon, menus and HUDs alike. All of the
+  choices come with the game.
+- **Accent colour**: choose your own highlight colour for selections, headings and borders
+  instead of the fixed purple. Click the swatch to open the colour picker; it previews live as
+  you drag it.
+- **Backdrop opacity**: set how see-through the background of the window and the HUDs is, with
+  a slider or by typing an exact percentage. Text, icons and borders stay solid at any setting.
 
 ### [0.18] - 2026-07-15
 
@@ -13,8 +24,6 @@ All notable player-facing changes are listed here, newest first.
   The game gives no precise distance for them, so expect a wider bracket than usual and no
   reading past about 28 yards.
 
----
-
 ### [0.17] - 2026-07-15
 
 #### Added
@@ -22,16 +31,12 @@ All notable player-facing changes are listed here, newest first.
   distance to it as a yard range (e.g. 35-40). Find it under **Range Indicator** in the menu; it's off by default,
   so switch it on when you need it.
 
----
-
 ### [0.16] - 2026-07-14
 
 #### Added
 - Missing Consumables now tracks **Elixirs** (the two warlock caster elixirs: Major Shadow
   Power and Major Firepower). It's **off by default**, since you can't use an elixir together
   with a flask.
-
----
 
 ### [0.15] - 2026-07-14
 
@@ -49,8 +54,6 @@ All notable player-facing changes are listed here, newest first.
 - Hardened the raid cooldown-sharing messages against spam and malformed data from other
   players (rate-limited resync replies; sanity-clamped incoming timers).
 
----
-
 ### [0.14] - 2026-07-13
 
 #### Fixed
@@ -58,8 +61,6 @@ All notable player-facing changes are listed here, newest first.
   previously fail to auto-show on entering the instance).
 - Missing Consumables HUD: the **Show HUD** toggle and the close (**X**) button now always
   work while you're in a raid - auto-show no longer forces the strip back on.
-
----
 
 ### [0.13] - 2026-07-12
 
