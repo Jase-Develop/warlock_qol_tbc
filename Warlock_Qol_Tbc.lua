@@ -120,6 +120,11 @@ end
 -- (the "reset" target). The UI mutates THEME.accent + repaints via WQ.ReapplyAccent.
 WQ.DEFAULT_ACCENT = "8788ee"
 
+-- Backdrop opacity (Settings page). Per-profile whole percent; DEFAULT_OPACITY = the long-standing
+-- window fill (the "reset" target). Drives the FILL of every framed surface (window, wizard, all three
+-- HUDs) via the UI's WQ.ReapplyOpacity; text/icons/borders stay solid at any setting.
+WQ.DEFAULT_OPACITY = 80
+
 -- UI font choices (Settings page). key -> { label, path }; order = FONT_ORDER (alphabetical by label).
 -- All are stock client fonts (no bundling). The UI's ApplyFont resolves the active key to a path.
 WQ.FONT_ORDER = { "arialn", "friz", "morpheus", "skurri" }
@@ -170,6 +175,8 @@ local function InitProfile(p)
     if p.font == nil then p.font = "arialn" end
     -- Settings: accent colour (6-hex; default = Warlock purple).
     if p.accent == nil then p.accent = WQ.DEFAULT_ACCENT end
+    -- Settings: backdrop opacity (whole percent, default 80).
+    if p.opacity == nil then p.opacity = WQ.DEFAULT_OPACITY end
     -- Ensure every pet family has a lines table, even if empty.
     for _, family in ipairs(WQ.PET_FAMILIES) do
         if not p.lines[family] then p.lines[family] = {} end
@@ -1247,6 +1254,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
         if WQ.ReapplyFont then WQ.ReapplyFont() end   -- apply the active profile's saved font choice
         if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- apply the active profile's saved accent colour
+        if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- ...and its saved backdrop opacity
 
     elseif event == "UNIT_PET" then
         local unit = ...
@@ -1846,6 +1854,26 @@ function WQ.SetAccent(hex)
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end   -- live repaint (defined in the UI file)
 end
 
+-- Per-profile backdrop opacity (Settings page), a whole percent 0-100. The UI's WQ.ReapplyOpacity
+-- repaints every registered frame fill.
+local OPACITY_MIN, OPACITY_MAX = 0, 100
+function WQ.GetOpacity()
+    local p = ActiveProfile()
+    local v = p and p.opacity
+    if type(v) ~= "number" then return WQ.DEFAULT_OPACITY end
+    if v < OPACITY_MIN then return OPACITY_MIN end
+    if v > OPACITY_MAX then return OPACITY_MAX end
+    return v
+end
+function WQ.SetOpacity(n)
+    n = tonumber(n); if not n then return end
+    n = math.floor(n + 0.5)
+    if n < OPACITY_MIN then n = OPACITY_MIN end
+    if n > OPACITY_MAX then n = OPACITY_MAX end
+    local p = ActiveProfile(); if p then p.opacity = n end
+    if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end   -- live repaint (defined in the UI file)
+end
+
 -- Debug dump (/run Warlock_Qol_Tbc.DebugDumpRange()): the current target's bracket PLUS every rung's
 -- result (in/out/— with the item ID that resolved it). Use it to spot a dead rung (all candidates "—",
 -- i.e. a gap) so its item IDs can be swapped for working ones during tuning.
@@ -1911,6 +1939,7 @@ function WQ.SwitchProfile(name)
     UpdateCombatLogRegistration()   -- the new profile's announcer flags may differ
     if WQ.ReapplyFont then WQ.ReapplyFont() end   -- the new profile may pick a different font
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- ...and a different accent colour
+    if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- ...and a different backdrop opacity
     return true
 end
 
@@ -1984,6 +2013,7 @@ function WQ.HardReset()
     UpdateCombatLogRegistration()                -- listener state reset with the fresh (all-ON) flags
     if WQ.ReapplyFont then WQ.ReapplyFont() end  -- back to the default font
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- back to the default accent colour
+    if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- back to the default backdrop opacity
     print(("|cff9900ffWarlockQol|r: reset EVERYTHING to defaults (all profiles and settings) and removed %d macro(s)."):format(removed))
     return true
 end
@@ -2210,6 +2240,10 @@ local function SanitizeProfile(raw)
     if type(raw.font) == "string" and WQ.FONTS[raw.font] then p.font = raw.font end
     -- Accent colour (Settings) — only a well-formed 6-hex string travels; InitProfile defaults it.
     if type(raw.accent) == "string" and raw.accent:match("^%x%x%x%x%x%x$") then p.accent = raw.accent:lower() end
+    -- Backdrop opacity (Settings) — only a sane percent travels; InitProfile defaults it.
+    if type(raw.opacity) == "number" and raw.opacity >= 0 and raw.opacity <= 100 then
+        p.opacity = math.floor(raw.opacity)
+    end
     return p
 end
 
