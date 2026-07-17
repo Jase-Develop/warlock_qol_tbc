@@ -2,6 +2,15 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.20] - 2026-07-17
+
+#### Changed
+- **Backdrop opacity** is now set separately for the main window and for each HUD (Raid Cooldowns,
+  Missing Consumables, Range Indicator). Each HUD's slider lives on its own page; the main window's
+  stays on the Settings page. The percentage is now literal, so 100% is fully solid. Note that on
+  first load the HUDs will look a little more solid than before at the default 80%; drag each one
+  down if you preferred them lighter.
+
 ### [0.19] - 2026-07-17
 
 #### Added

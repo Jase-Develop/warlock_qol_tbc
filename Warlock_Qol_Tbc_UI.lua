@@ -156,33 +156,31 @@ local function ApplyFlat(frame, color, border)
 end
 
 -- ── Backdrop opacity ────────────────────────────────────────────────────────────
--- One user setting (Settings page, per-profile) drives the FILL of every framed surface: the main
--- window, the wizard, and the three HUDs. Only the fill moves — text, icons and borders keep their own
--- alpha, so everything stays readable at any setting.
--- The HUDs sit deliberately lighter than the window (0.5 against its 0.8), so each frame registers a
--- FACTOR and the setting scales both together, holding that relationship at every value.
-local HUD_FILL_FACTOR = 0.625   -- 0.5 HUD fill at the default 80% window fill
-local fillMeta = {}             -- frame -> { color = <THEME colour>, factor = <multiplier> }
+-- FOUR independent per-profile settings drive the FILL of the framed surfaces: the main window (+ the
+-- wizard, which tracks it) on the Settings page, and one each for the three standalone HUDs on their own
+-- pages. Only the fill moves — text, icons and borders keep their own alpha, so everything stays readable
+-- at any setting. Each frame records the getter for ITS value; the percent is literal (100% = solid).
+local fillMeta = {}   -- frame -> { color = <THEME colour>, get = <fn()->percent> }
 
--- Paint one registered frame's fill at the active opacity. Skipped while a frame has no backdrop: the
+-- Paint one registered frame's fill at its value's opacity. Skipped while a frame has no backdrop: the
 -- consumables/range "Transparent mode" drops it entirely, and that wins over this setting.
 local function PaintFill(frame)
     local m = fillMeta[frame]
     if not m then return end
     if frame.GetBackdrop and not frame:GetBackdrop() then return end
-    local pct = (WQ.GetOpacity and WQ.GetOpacity()) or 80   -- pre-login: no profile yet, use the default
-    frame:SetBackdropColor(m.color[1], m.color[2], m.color[3], (pct / 100) * m.factor)
+    local pct = (m.get and m.get()) or 80   -- pre-login: no profile yet, use the default
+    frame:SetBackdropColor(m.color[1], m.color[2], m.color[3], pct / 100)
 end
 
--- Record a frame's fill so the opacity setting can repaint it, and paint it now.
-local function RegisterFill(frame, color, factor)
-    fillMeta[frame] = { color = color, factor = factor or 1 }
+-- Record a frame's fill (colour + the getter for its opacity value) so it repaints, and paint it now.
+local function RegisterFill(frame, color, get)
+    fillMeta[frame] = { color = color, get = get }
     PaintFill(frame)
     return frame
 end
 
 -- Repaint every registered fill. Called from the core on login, profile switch and hard reset, and by
--- WQ.SetOpacity on every change (so the slider previews live as it's dragged).
+-- each WQ.Set*Opacity on every change (so a slider previews live as it's dragged).
 function WQ.ReapplyOpacity()
     for frame in pairs(fillMeta) do PaintFill(frame) end
 end
@@ -240,7 +238,7 @@ tinsert(UISpecialFrames, "Warlock_Qol_Tbc_Frame")
 -- Flat dark backdrop + 1px border; the fill alpha is the user's Backdrop opacity setting (default 80%,
 -- a subtle see-through). Border stays solid.
 ApplyFlat(f, THEME.bg, true)
-RegisterFill(f, THEME.bg, 1)
+RegisterFill(f, THEME.bg, WQ.GetOpacity)
 
 -- ── Title bar (brand + close) ─────────────────────────────────────────────────
 -- Charcoal strip across the top: addon name + version + close button.
@@ -516,6 +514,73 @@ local function MakeFlatSlider(parent, width, minV, maxV, step)
         self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
     end)
     return s
+end
+
+-- Compact one-row backdrop-opacity control for a HUD config page: "Opacity [====] [80] % [Reset]".
+-- Anchors its label at (x, y) from `parent`'s TOPLEFT; `getter`/`setter` are that HUD's core
+-- WQ.Get*/Set*Opacity pair. Returns a `sync` fn that pushes the stored value into the widgets (register
+-- it with the page's syncers so it re-reads on show / profile switch).
+local function MakeOpacityRow(parent, x, y, getter, setter)
+    local label = parent:CreateFontString(nil, "OVERLAY")
+    ApplyFont(label, 12)
+    label:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+    label:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+    label:SetText("Opacity")
+
+    local slider = MakeFlatSlider(parent, 150, 0, 100, 1)
+    slider:SetPoint("LEFT", label, "RIGHT", 10, 0)
+
+    local box = MakeFlatEditBox(parent)
+    box:SetSize(40, 22)
+    box:SetPoint("LEFT", slider, "RIGHT", 12, 0)
+    box:SetNumeric(true)
+    box:SetMaxLetters(3)
+    box:SetJustifyH("CENTER")
+
+    local pct = parent:CreateFontString(nil, "OVERLAY")
+    ApplyFont(pct, 12)
+    pct:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+    pct:SetPoint("LEFT", box, "RIGHT", 4, 0)
+    pct:SetText("%")
+
+    local reset = MakeFlatButton(parent, "Reset", 70, 22)
+    reset:SetPoint("LEFT", pct, "RIGHT", 12, 0)
+
+    -- `syncing` guards the loop: pushing a value INTO the widgets fires their handlers, which would
+    -- otherwise write it straight back.
+    local syncing = false
+    local function show(v)
+        syncing = true
+        slider:SetValue(v)
+        box:SetText(tostring(v))
+        syncing = false
+    end
+
+    slider:SetScript("OnValueChanged", function(_, v)
+        if syncing then return end
+        v = math.floor(v + 0.5)
+        setter(v)                                        -- repaints the HUD live as it's dragged
+        syncing = true; box:SetText(tostring(v)); syncing = false
+    end)
+
+    -- `committing` stops the re-entry ClearFocus would cause (it fires OnEditFocusLost, back into here).
+    local committing = false
+    local function commit()
+        if syncing or committing then return end
+        committing = true
+        local v = tonumber(box:GetText())
+        if v then setter(v) end
+        show(getter())                                   -- reflect the stored (clamped) value
+        box:ClearFocus()
+        committing = false
+    end
+    box:SetScript("OnEnterPressed",  commit)
+    box:SetScript("OnEditFocusLost", commit)
+    box:SetScript("OnEscapePressed", function(self) show(getter()); self:ClearFocus() end)
+
+    reset:SetScript("OnClick", function() setter(WQ.DEFAULT_OPACITY); show(getter()) end)
+
+    return function() show(getter()) end
 end
 
 -- Flat fixed-height MULTILINE box (Profiles export/import). The EditBox sits in a bare ScrollFrame
@@ -1948,7 +2013,12 @@ do
         function(v) WQ.SetSoulstoneActiveEnabled(v) end)
     y = y - 28
 
-    -- Re-sync every checkbox. Runs on page show, and exposed so the HUD's X button can call it after
+    -- Appearance: this HUD's backdrop opacity (independent of the main window and the other HUDs).
+    Rule(y)
+    Heading("Appearance", y - 16)
+    syncers[#syncers + 1] = MakeOpacityRow(track, PAD_L, y - 42, WQ.GetTrackerOpacity, WQ.SetTrackerOpacity)
+
+    -- Re-sync every widget. Runs on page show, and exposed so the HUD's X button can call it after
     -- flipping "Show HUD" off, keeping the page checkbox in sync.
     function WQ.SyncTrackerPage()
         for _, sync in ipairs(syncers) do sync() end
@@ -2068,17 +2138,25 @@ do
 
     Rule(-182)
 
-    -- ── Tracked consumables: one checkbox per consumable (data-driven from CONSUMABLE_ORDER).
+    -- ── Tracked consumables: one checkbox per consumable (data-driven from CONSUMABLE_ORDER), laid out
+    -- two per row (left col PAD_L, right col 185, matching the HUD checkboxes above) to save vertical space.
     Heading("Tracked Consumables", -198)
     local y = -222
-    for _, key in ipairs(WQ.CONSUMABLE_ORDER or {}) do
+    for i, key in ipairs(WQ.CONSUMABLE_ORDER or {}) do
         local spec  = WQ.CONSUMABLES and WQ.CONSUMABLES[key]
         local label = spec and spec.label or key
         CheckRow(label, y,
             function() return WQ.IsConsumeTracked(key) end,
-            function(v) WQ.SetConsumeTracked(key, v) end)
-        y = y - 28
+            function(v) WQ.SetConsumeTracked(key, v) end,
+            (i % 2 == 1) and PAD_L or 185)   -- odd = left column, even = right
+        if i % 2 == 0 then y = y - 28 end    -- drop to the next row after each pair
     end
+    if #(WQ.CONSUMABLE_ORDER or {}) % 2 == 1 then y = y - 28 end   -- clear a half-filled final row
+
+    -- Appearance: this HUD's backdrop opacity (independent of the main window and the other HUDs).
+    Rule(y)
+    Heading("Appearance", y - 16)
+    syncers[#syncers + 1] = MakeOpacityRow(cons, PAD_L, y - 42, WQ.GetConsumeOpacity, WQ.SetConsumeOpacity)
 
     -- Re-sync every widget (page show / profile switch); the HUD's X button calls it too (SetConsumeHUDOpen).
     function WQ.SyncConsumablesPage()
@@ -2185,9 +2263,14 @@ do
     fontBox:HookScript("OnEditFocusLost", function() CommitFont() end)
     syncers[#syncers + 1] = RefreshFontBox
 
+    -- Appearance: this HUD's backdrop opacity (only visible when Transparent mode is off).
     Rule(-198)
+    Heading("Appearance", -214)
+    syncers[#syncers + 1] = MakeOpacityRow(rng, PAD_L, -240, WQ.GetRangeOpacity, WQ.SetRangeOpacity)
+
+    Rule(-272)
     Caption("Drag the HUD to reposition it. With no target it shows \"No target\" (or hides, if you tick " ..
-            "the option above), and it reads \"(>60)\" when the target is beyond checking range.", -214)
+            "the option above), and it reads \"(>60)\" when the target is beyond checking range.", -288)
 
     function WQ.SyncRangePage()
         for _, sync in ipairs(syncers) do sync() end
@@ -2370,78 +2453,11 @@ do
     opacityCap:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -242)
     opacityCap:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -242)
     opacityCap:SetJustifyH("LEFT")
-    opacityCap:SetText("How solid the background of this window and the HUDs is: lower is more " ..
-                       "see-through. Text, icons and borders are unaffected. The HUDs sit a little " ..
-                       "lighter than this window and scale with it.")
+    opacityCap:SetText("How solid this window's background is: lower is more see-through. Text, icons " ..
+                       "and borders are unaffected. Each HUD has its own opacity, set on its own page.")
 
-    local opacityLabel = settings:CreateFontString(nil, "OVERLAY")
-    ApplyFont(opacityLabel, 12)
-    opacityLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-    opacityLabel:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -292)
-    opacityLabel:SetText("Opacity")
-
-    local opacitySlider = MakeFlatSlider(settings, 180, 0, 100, 1)
-    opacitySlider:SetPoint("LEFT", opacityLabel, "RIGHT", 10, 0)
-
-    local opacityBox = MakeFlatEditBox(settings)
-    opacityBox:SetSize(44, 22)
-    opacityBox:SetPoint("LEFT", opacitySlider, "RIGHT", 12, 0)
-    opacityBox:SetNumeric(true)
-    opacityBox:SetMaxLetters(3)
-    opacityBox:SetJustifyH("CENTER")
-
-    local pctSign = settings:CreateFontString(nil, "OVERLAY")
-    ApplyFont(pctSign, 12)
-    pctSign:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
-    pctSign:SetPoint("LEFT", opacityBox, "RIGHT", 4, 0)
-    pctSign:SetText("%")
-
-    -- `syncing` guards the loop: pushing a value INTO the widgets fires their handlers, which would
-    -- otherwise write it straight back to the profile.
-    local syncing = false
-    local function ShowOpacity(v)
-        syncing = true
-        opacitySlider:SetValue(v)
-        opacityBox:SetText(tostring(v))
-        syncing = false
-    end
-
-    opacitySlider:SetScript("OnValueChanged", function(_, v)
-        if syncing then return end
-        v = math.floor(v + 0.5)
-        WQ.SetOpacity(v)                                    -- repaints every frame live as it's dragged
-        syncing = true; opacityBox:SetText(tostring(v)); syncing = false
-    end)
-
-    -- Typed entry: commit on Enter or on click-away, then re-show the stored value so an out-of-range
-    -- or junk entry snaps back to what actually landed. `committing` stops the re-entry the ClearFocus
-    -- below would otherwise cause (it fires OnEditFocusLost, which lands back here).
-    local committing = false
-    local function CommitOpacityBox()
-        if syncing or committing then return end
-        committing = true
-        local v = tonumber(opacityBox:GetText())
-        if v then WQ.SetOpacity(v) end
-        ShowOpacity(WQ.GetOpacity())
-        opacityBox:ClearFocus()
-        committing = false
-    end
-    opacityBox:SetScript("OnEnterPressed",  CommitOpacityBox)
-    opacityBox:SetScript("OnEditFocusLost", CommitOpacityBox)
-    opacityBox:SetScript("OnEscapePressed", function(self)
-        ShowOpacity(WQ.GetOpacity())   -- discard the edit
-        self:ClearFocus()
-    end)
-
-    local opacityReset = MakeFlatButton(settings, "Reset to default")
-    opacityReset:SetSize(120, 24)
-    opacityReset:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -324)
-    opacityReset:SetScript("OnClick", function()
-        WQ.SetOpacity(WQ.DEFAULT_OPACITY)
-        ShowOpacity(WQ.GetOpacity())
-    end)
-
-    syncers[#syncers + 1] = function() ShowOpacity(WQ.GetOpacity()) end
+    -- The same compact control the HUD pages use, so all four opacities behave identically.
+    syncers[#syncers + 1] = MakeOpacityRow(settings, PAD_L, -292, WQ.GetOpacity, WQ.SetOpacity)
 
     function WQ.SyncSettingsPage()
         for _, sync in ipairs(syncers) do sync() end
@@ -2585,7 +2601,7 @@ do
     hud:SetFrameStrata("MEDIUM")
     hud:SetClampedToScreen(true)
     ApplyFlat(hud, THEME.bg, true)
-    RegisterFill(hud, THEME.bg, HUD_FILL_FACTOR)   -- ~50% fill at the default opacity (border stays solid)
+    RegisterFill(hud, THEME.bg, WQ.GetTrackerOpacity)   -- own opacity value (Raid Cooldowns page); border solid
     hud:Hide()
 
     -- Header strip: title (also the visual grip). No mouse, so drags fall through to the hud frame.
@@ -2992,7 +3008,7 @@ do
     hud:SetFrameStrata("MEDIUM")
     hud:SetClampedToScreen(true)
     ApplyFlat(hud, THEME.bg, true)
-    RegisterFill(hud, THEME.bg, HUD_FILL_FACTOR)   -- ~50% fill at the default opacity (border stays solid)
+    RegisterFill(hud, THEME.bg, WQ.GetConsumeOpacity)   -- own opacity value (Missing Consumables page); border solid
     hud:Hide()
 
     -- Header strip: title (also the visual grip). No mouse, so drags fall through to the hud frame.
@@ -3264,7 +3280,7 @@ do
     hud:SetFrameStrata("MEDIUM")
     hud:SetClampedToScreen(true)
     ApplyFlat(hud, THEME.bg, true)
-    RegisterFill(hud, THEME.bg, HUD_FILL_FACTOR)   -- ~50% fill at the default opacity (border solid)
+    RegisterFill(hud, THEME.bg, WQ.GetRangeOpacity)   -- own opacity value (Range Indicator page); border solid
     hud:Hide()
 
     -- Header strip: title + close X (matches the other HUDs). No mouse, so drags fall through to hud.
@@ -3635,7 +3651,7 @@ do
     wiz:SetFrameStrata("FULLSCREEN_DIALOG")  -- above the main /wq window (DIALOG strata)
     wiz:SetToplevel(true)
     ApplyFlat(wiz, THEME.bg, true)
-    RegisterFill(wiz, THEME.bg, 1)  -- matches the main frame's fill at any opacity setting
+    RegisterFill(wiz, THEME.bg, WQ.GetOpacity)  -- tracks the main window's opacity setting
     wiz:Hide()
 
     -- Draggable; position not persisted (transient one-shot).
