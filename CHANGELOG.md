@@ -2,6 +2,12 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.22] - 2026-07-20
+
+#### Changed
+- Maintenance release: no in-game changes. Repository and packaging cleanup only (the packaged
+  addon no longer bundles an internal development file).
+
 ### [0.21] - 2026-07-20
 
 #### Added
