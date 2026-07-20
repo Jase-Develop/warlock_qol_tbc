@@ -2,6 +2,15 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.24] - 2026-07-20
+
+#### Fixed
+- Fully stopped the Range Indicator "tried to call the protected function" errors (v0.23 only covered
+  part of it). The distance check now skips its item-based checks while you are in combat and targeting
+  something you cannot attack (a friendly player or NPC), which is the case the game now blocks. In that
+  situation a friendly target may show "(?)" instead of a distance; attackable targets are unaffected
+  and everything works normally out of combat.
+
 ### [0.23] - 2026-07-20
 
 #### Fixed

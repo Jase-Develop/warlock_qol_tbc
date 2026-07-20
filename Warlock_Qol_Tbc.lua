@@ -1829,6 +1829,16 @@ local function LadderFor(class)
     return RANGE_MISC, InteractResult
 end
 
+-- Item/interact range checks (IsItemInRange, C_Item.IsItemInRange, CheckInteractDistance) are PROTECTED
+-- while in combat on a NON-attackable unit (a friendly player or friendly NPC): calling them then taints
+-- and fires ADDON_ACTION_BLOCKED. Attackable targets are always safe, and everything is safe out of
+-- combat. This is LibRangeCheck-3.0's exact guard — when it's true we skip the item/interact ladder and
+-- rely on the non-protected UnitInRange anchor (group members only), so a friendly target in combat may
+-- read "(?)" instead of a bracket. Namespaced C_Item.IsItemInRange alone does NOT dodge this.
+local function RangeChecksBlocked(unit)
+    return InCombatLockdown() and not UnitCanAttack("player", unit)
+end
+
 -- Bracket the current target's distance. Returns:
 --   nil            → no target
 --   name, lo, hi   → lo < dist ≤ hi (lo defaults 0 = within the smallest checker; hi nil = beyond
@@ -1857,11 +1867,15 @@ function WQ.GetTargetRange()
         end
     end
 
-    -- Friendly group members get the reliable ~40yd UnitInRange anchor first.
+    -- Friendly group members get the reliable ~40yd UnitInRange anchor first (NOT protected, safe in
+    -- combat) — this is the only signal left on a friendly unit while the item ladder is blocked.
     if class == "friend" and UnitInRange and (UnitInParty(unit) or UnitInRaid(unit)) then
         consider(40, UnitInRange(unit) and true or false)
     end
-    for _, rung in ipairs(ladder) do consider(rung[1], resolve(rung[2], unit)) end
+    -- The item/interact ladder taints on a non-attackable unit in combat; skip it then (see above).
+    if not RangeChecksBlocked(unit) then
+        for _, rung in ipairs(ladder) do consider(rung[1], resolve(rung[2], unit)) end
+    end
 
     if not any then return name, nil, nil end
     if hi and lo >= hi then lo = 0 end   -- guard an impossible bracket from checker disagreement
@@ -1976,6 +1990,10 @@ function WQ.DebugDumpRange()
     local ladder = LadderFor(class)
     local misc = (class == "misc")
     print(("  reaction: %s%s"):format(class, misc and " (NPC — interact distance only, coarse)" or ""))
+    if RangeChecksBlocked("target") then
+        print("  |cffffcc00item/interact checks skipped (in combat on a non-attackable unit — protected)|r")
+        return
+    end
     for _, rung in ipairs(ladder) do
         local shown = nil
         for _, id in ipairs(rung[2]) do
