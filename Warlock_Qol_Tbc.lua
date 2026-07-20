@@ -1760,6 +1760,18 @@ local function RangeActive()
     return FeatureOn("rangeEnabled")
 end
 
+-- The global IsItemInRange became a PROTECTED function in the 2.5.6-era client update: calling it
+-- taints in combat and spams ADDON_ACTION_BLOCKED ("tried to call the protected function ...") even
+-- though the range read still nominally works. C_Item.IsItemInRange (same (itemID, unit) signature,
+-- returns bool/nil, flagged AllowedWhenUntainted) is the safe namespaced replacement and IS present in
+-- 2.5.6. Prefer it, falling back to the old global only where the namespaced one is missing — same
+-- shape as the GetSpellNameByID / AddonVersion shims.
+local ItemInRange
+do
+    local cf = C_Item and C_Item.IsItemInRange
+    ItemInRange = cf and function(id, unit) return cf(id, unit) end or IsItemInRange
+end
+
 -- IsItemInRange returns nil until the item is cached; GetItemInfo requests the load. So keep warming
 -- every call until all items resolve (then stop) — self-heals the "gap in the first few seconds" case.
 -- The attempt cap stops the loop even if an item never resolves (e.g. a bad ID not in this client's
@@ -1784,7 +1796,7 @@ end
 -- → true (in range) / false (out of range). nil = no candidate resolved (rung is a gap this call).
 local function RungResult(ids, unit)
     for _, id in ipairs(ids) do
-        local r = IsItemInRange(id, unit)
+        local r = ItemInRange(id, unit)
         if r ~= nil then return r and true or false end
     end
     return nil
@@ -1970,7 +1982,7 @@ function WQ.DebugDumpRange()
             -- misc rungs are CheckInteractDistance indices, not item IDs. Can't fold this into an
             -- and/or chain: a false result would fall through to the item branch.
             local r
-            if misc then r = CheckInteractDistance("target", id) else r = IsItemInRange(id, "target") end
+            if misc then r = CheckInteractDistance("target", id) else r = ItemInRange(id, "target") end
             if r ~= nil then
                 shown = (r and "IN  via " or "OUT via ") .. (misc and ("interact " .. id) or id)
                 break

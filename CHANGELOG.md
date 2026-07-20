@@ -2,6 +2,13 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.23] - 2026-07-20
+
+#### Fixed
+- Stopped the Range Indicator from spamming "AddOn tried to call the protected function" errors after
+  a recent game update. The distance check now uses the current, combat-safe range API, falling back
+  to the older one only on clients that lack it.
+
 ### [0.22] - 2026-07-20
 
 #### Changed
