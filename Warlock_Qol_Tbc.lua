@@ -125,16 +125,6 @@ WQ.DEFAULT_ACCENT = "8788ee"
 -- (text/icons/borders stay solid) via the UI's WQ.ReapplyOpacity; the percent is literal (100% = solid).
 WQ.DEFAULT_OPACITY = 80
 
--- UI font choices (Settings page). key -> { label, path }; order = FONT_ORDER (alphabetical by label).
--- All are stock client fonts (no bundling). The UI's ApplyFont resolves the active key to a path.
-WQ.FONT_ORDER = { "arialn", "friz", "morpheus", "skurri" }
-WQ.FONTS = {
-    arialn   = { label = "Arial Narrow",   path = "Fonts\\ARIALN.TTF" },
-    friz     = { label = "Friz Quadrata",  path = "Fonts\\FRIZQT__.TTF" },
-    morpheus = { label = "Morpheus",       path = "Fonts\\MORPHEUS.TTF" },
-    skurri   = { label = "Skurri",         path = "Fonts\\skurri.ttf" },
-}
-
 -- Ensure a profile has every config field (idempotent; heals old/partial profiles).
 local function InitProfile(p)
     p = p or {}
@@ -150,16 +140,26 @@ local function InitProfile(p)
     if p.soulsEnabled     == nil then p.soulsEnabled     = true end
     if p.soulstoneEnabled == nil then p.soulstoneEnabled = true end
     if p.banishEnabled    == nil then p.banishEnabled    = true end
+    -- Per-feature party/raid announce toggles (both default on). The main *Enabled flag still
+    -- overrides both; these only decide which group context (party vs raid) actually announces.
+    if p.soulstonePartyEnabled == nil then p.soulstonePartyEnabled = true end
+    if p.soulstoneRaidEnabled  == nil then p.soulstoneRaidEnabled  = true end
+    if p.banishPartyEnabled    == nil then p.banishPartyEnabled    = true end
+    if p.banishRaidEnabled     == nil then p.banishRaidEnabled     = true end
     if p.trackerEnabled   == nil then p.trackerEnabled   = true end
-    -- trackerShowRaid = auto-show HUD in raid. trackedCds[key]=false disables a cooldown (absent = tracked).
+    -- trackerShowRaid/Party = auto-show HUD on entering a raid / party dungeon (raid on, party OFF by
+    -- default). trackedCds[key]=false disables a cooldown (absent = tracked).
     if p.trackerShowRaid  == nil then p.trackerShowRaid  = true  end
+    if p.trackerShowParty == nil then p.trackerShowParty = false end
     -- soulstoneActiveEnabled = show the "Soulstones Out" section (who currently HAS a soulstone buff).
     if p.soulstoneActiveEnabled == nil then p.soulstoneActiveEnabled = true end
     if not p.trackedCds   then p.trackedCds = {} end
-    -- Missing Consumables: consumeShowRaid = auto-show in raid; consumeThreshold = expiry warning
-    -- window (secs, default 120); trackedConsumes[key]=false disables one (absent = tracked).
+    -- Missing Consumables: consumeShowRaid/Party = auto-show on entering a raid / party dungeon (raid on,
+    -- party OFF by default); consumeThreshold = expiry warning window (secs, default 120);
+    -- trackedConsumes[key]=false disables one (absent = tracked).
     if p.consumablesEnabled == nil then p.consumablesEnabled = true end
     if p.consumeShowRaid    == nil then p.consumeShowRaid    = true end
+    if p.consumeShowParty   == nil then p.consumeShowParty   = false end
     if p.consumeGlow        == nil then p.consumeGlow        = true end   -- glow the missing icons
     if p.consumeTransparent == nil then p.consumeTransparent = false end  -- hide HUD frame/header, icons only
     if p.consumeThreshold   == nil then p.consumeThreshold   = 120  end
@@ -171,8 +171,6 @@ local function InitProfile(p)
     if p.rangeTransparent  == nil then p.rangeTransparent  = true  end
     if p.rangeHideNoTarget == nil then p.rangeHideNoTarget = false end  -- on = hide HUD when untargeted
     if p.rangeFontSize     == nil then p.rangeFontSize     = 16    end
-    -- Settings: UI font (a key into WQ.FONTS; default = the stock Arial Narrow).
-    if p.font == nil then p.font = "arialn" end
     -- Settings: accent colour (6-hex; default = Warlock purple).
     if p.accent == nil then p.accent = WQ.DEFAULT_ACCENT end
     -- Backdrop opacity (whole percent, default 80): one for the main window (Settings page) plus one
@@ -478,6 +476,24 @@ local function GroupChatChannel()
     return "SAY"
 end
 
+-- Announce channel for a group-only feature (soulstone/banish) that carries independent per-context
+-- toggles. Returns "RAID"/"PARTY" when the current group context is enabled, or nil to suppress
+-- (solo, or that context's toggle is off). `feature` is "soulstone" or "banish"; it reads
+-- <feature>PartyEnabled / <feature>RaidEnabled from the active profile (both default on: only an
+-- explicit false suppresses, so an unhealed old profile still announces).
+local function GroupAnnounceChannel(feature)
+    local p = ActiveProfile()
+    if not p then return nil end
+    if IsInRaid() then
+        if p[feature .. "RaidEnabled"] == false then return nil end
+        return "RAID"
+    elseif IsInGroup() then
+        if p[feature .. "PartyEnabled"] == false then return nil end
+        return "PARTY"
+    end
+    return nil   -- solo: these features are group-only
+end
+
 -- {location} text: subzone if available, else zone.
 local function GetLocationText()
     local sub = GetSubZoneText()
@@ -519,7 +535,8 @@ end
 local soulstoneRecent = {}   -- targetName -> GetTime() of the last announce
 local function SaySoulstone(targetName)
     if not FeatureOn("soulstoneEnabled") then return end
-    if not IsInGroup() then return end            -- group-only; stay silent when solo
+    local channel = GroupAnnounceChannel("soulstone")   -- nil = solo, or party/raid toggle off
+    if not channel then return end
     local p = ActiveProfile()
     if not p then return end
     local lines = p.soulstoneLines
@@ -538,7 +555,7 @@ local function SaySoulstone(targetName)
     line = line:gsub("{targetName}", targetName)
     line = line:match("^%s*(.-)%s*$")
     if line ~= "" then
-        SendChatMessage(line, GroupChatChannel())
+        SendChatMessage(line, channel)
     end
 end
 
@@ -547,7 +564,8 @@ end
 local banishRecent = {}   -- "<kind>:<targetName>" -> GetTime() of the last announce
 local function SayBanish(targetName, rankSuffix, resisted)
     if not FeatureOn("banishEnabled") then return end
-    if not IsInGroup() then return end            -- group-only; stay silent when solo
+    local channel = GroupAnnounceChannel("banish")   -- nil = solo, or party/raid toggle off
+    if not channel then return end
     local p = ActiveProfile()
     if not p then return end
     local lines = resisted and p.banishResistLines or p.banishLines
@@ -568,7 +586,7 @@ local function SayBanish(targetName, rankSuffix, resisted)
     line = line:gsub("{targetName}", targetName)
     line = line:match("^%s*(.-)%s*$")
     if line ~= "" then
-        SendChatMessage(line .. (rankSuffix or ""), GroupChatChannel())
+        SendChatMessage(line .. (rankSuffix or ""), channel)
     end
 end
 
@@ -798,8 +816,8 @@ function WQ.ResetMacros()
     print(("|cff9900ffWarlockQol|r: removed %d macro(s). Your saved lines were kept."):format(removed))
 end
 
--- ── Raid Cooldown Tracker (core: comms + roster + combat-log fallback) ─────────
--- Tracks each raid warlock's cooldown state for the HUD. Hybrid: addon users broadcast their
+-- ── Cooldown Tracker (core: comms + roster + combat-log fallback; party AND raid) ─────────
+-- Tracks each party/raid warlock's cooldown state for the HUD. Hybrid: addon users broadcast their
 -- own real remaining over comms (authoritative); non-users are guessed from the combat log
 -- (in range only) using a fixed duration. Comms always supersedes a combat-log guess. Roster
 -- comes from UnitClass so every warlock gets a row ("Ready" until we have a timer).
@@ -835,8 +853,16 @@ local function StripRealm(name)
 end
 
 -- Every WARLOCK in the raid (or just the player when not in one). Returns { name, unit, isPlayer } entries.
-local function RaidWarlocks()
+-- Warlocks in the current group. In a raid: every raid member. In a party: the player + party1..4.
+-- Solo (or non-warlock): just the player if a warlock. Roster only — the HUD/comms decide what to show.
+local function GroupWarlocks()
     local out = {}
+    local function addPlayer()
+        local _, myClass = UnitClass("player")
+        if myClass == "WARLOCK" then
+            out[#out + 1] = { name = StripRealm(UnitName("player")), unit = "player", isPlayer = true }
+        end
+    end
     if IsInRaid() then
         for i = 1, GetNumGroupMembers() do
             local unit = "raid" .. i
@@ -847,12 +873,20 @@ local function RaidWarlocks()
                 end
             end
         end
-    else
-        -- Raid-only feature: when not in a raid, show only the player.
-        local _, myClass = UnitClass("player")
-        if myClass == "WARLOCK" then
-            out[#out + 1] = { name = StripRealm(UnitName("player")), unit = "player", isPlayer = true }
+    elseif IsInGroup() then
+        -- Party: party units are the OTHER members, so add the player explicitly.
+        addPlayer()
+        for i = 1, 4 do
+            local unit = "party" .. i
+            if UnitExists(unit) then
+                local _, class = UnitClass(unit)
+                if class == "WARLOCK" then
+                    out[#out + 1] = { name = StripRealm(UnitName(unit)), unit = unit, isPlayer = false }
+                end
+            end
         end
+    else
+        addPlayer()   -- solo: show only the player
     end
     return out
 end
@@ -893,9 +927,10 @@ local function GetOwnCooldownRemaining(spec)
     return spec.duration   -- ⚠ placeholder until the live cooldown read is verified in-game
 end
 
--- Broadcast channel: RAID only (raid-only feature); nil (party/solo) = don't send.
+-- Broadcast channel: RAID in a raid, PARTY in a party, nil (solo) = don't send.
 local function TrackerChannel()
     if IsInRaid() then return "RAID" end
+    if IsInGroup() then return "PARTY" end
     return nil
 end
 
@@ -1019,7 +1054,7 @@ end
 -- so no comms. ssActive[name] = { expires (GetTime domain, 0 = active but unknown time), isPlayer }.
 local ssActive = {}
 
--- Units to scan: the raid (raid-only display), else the player + party (so it's testable in a party).
+-- Units to scan: every raid member in a raid, else the player + party (works in party AND raid).
 local function GroupUnits()
     local units = {}
     if IsInRaid() then
@@ -1199,7 +1234,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- Load message (printed here, not ADDON_LOADED, once chat is ready). Version from the .toc.
         local getMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
         local version = getMeta and getMeta("Warlock_Qol_Tbc", "Version") or "?"
-        print(("|cff9900ffWarlockQol|r v%s loaded successfully. Type |cffffd700/wq|r to open the menu."):format(version))
+        print(("|cff9900ffWarlockQol|r v%s loaded. Enjoy!"):format(version))
 
         -- First reliable point for UnitName/realm — resolve this character's profile binding.
         ResolveActiveBinding()
@@ -1217,7 +1252,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
         -- First run: show the setup wizard — WARLOCKS only (per-char setupComplete gates it; the
         -- wizard sets the flag on dismiss, not here). Non-warlocks skip it (still reachable from the
-        -- Reset page's Show Setup Guide). Fall back to the hub if the wizard is unavailable.
+        -- Settings page's Show Setup Guide). Fall back to the hub if the wizard is unavailable.
         if cs and not cs.setupComplete and IsWarlock() then
             if WQ.ShowWizard then
                 -- Defer one tick (frames shown mid-login can be swept closed); re-check the flag.
@@ -1256,7 +1291,6 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
         if WQ.InitMinimap then WQ.InitMinimap() end
 
-        if WQ.ReapplyFont then WQ.ReapplyFont() end   -- apply the active profile's saved font choice
         if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- apply the active profile's saved accent colour
         if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- ...and its saved backdrop opacity
 
@@ -1315,8 +1349,8 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
 
     elseif event == "PLAYER_ENTERING_WORLD" then
-        -- Zoning (incl. entering/leaving a raid instance) — GROUP_ROSTER_UPDATE does NOT fire on a
-        -- zone change, so drive the tracker's auto-show transition off this event too.
+        -- Zoning (incl. entering/leaving a raid or party instance) — GROUP_ROSTER_UPDATE does NOT fire on
+        -- a zone change, so drive the tracker's auto-show transitions off this event too.
         if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
         if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
     end
@@ -1342,7 +1376,7 @@ UpdateTrackerRegistration = function()
     if TrackerActive() then
         eventFrame:RegisterEvent("CHAT_MSG_ADDON")
         eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
-        eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")   -- fires on zone-in (raid instance entry)
+        eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")   -- fires on zone-in (raid/party instance entry)
     else
         eventFrame:UnregisterEvent("CHAT_MSG_ADDON")
         eventFrame:UnregisterEvent("GROUP_ROSTER_UPDATE")
@@ -1373,6 +1407,34 @@ function WQ.SetBanishEnabled(on)
     local p = ActiveProfile()
     if p then p.banishEnabled = on and true or false end
     UpdateCombatLogRegistration()
+end
+
+-- Per-context party/raid announce toggles for soulstone & banish (default ON). These only gate which
+-- group context announces — they DON'T touch event registration (the combat-log listener stays keyed
+-- off the main *Enabled flag), so the setters just persist. Getters treat nil/absent as ON.
+function WQ.IsSoulstonePartyEnabled()
+    local p = ActiveProfile(); return p ~= nil and p.soulstonePartyEnabled ~= false
+end
+function WQ.SetSoulstonePartyEnabled(on)
+    local p = ActiveProfile(); if p then p.soulstonePartyEnabled = on and true or false end
+end
+function WQ.IsSoulstoneRaidEnabled()
+    local p = ActiveProfile(); return p ~= nil and p.soulstoneRaidEnabled ~= false
+end
+function WQ.SetSoulstoneRaidEnabled(on)
+    local p = ActiveProfile(); if p then p.soulstoneRaidEnabled = on and true or false end
+end
+function WQ.IsBanishPartyEnabled()
+    local p = ActiveProfile(); return p ~= nil and p.banishPartyEnabled ~= false
+end
+function WQ.SetBanishPartyEnabled(on)
+    local p = ActiveProfile(); if p then p.banishPartyEnabled = on and true or false end
+end
+function WQ.IsBanishRaidEnabled()
+    local p = ActiveProfile(); return p ~= nil and p.banishRaidEnabled ~= false
+end
+function WQ.SetBanishRaidEnabled(on)
+    local p = ActiveProfile(); if p then p.banishRaidEnabled = on and true or false end
 end
 
 -- Macro-feature flags: no event, so the setter just persists (the Say*Line guard reads it).
@@ -1416,10 +1478,15 @@ function WQ.SetTrackerEnabled(on)
     if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
 end
 
--- Per-profile "auto-show HUD in raid" flag (raid-only). Re-evaluates HUD visibility.
+-- Per-profile "auto-show HUD" flags: raid (default on) + party (default off). Re-evaluate HUD visibility.
 function WQ.IsTrackerShowRaid()  local p = ActiveProfile(); return p and p.trackerShowRaid  or false end
 function WQ.SetTrackerShowRaid(on)
     local p = ActiveProfile(); if p then p.trackerShowRaid = on and true or false end
+    if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
+end
+function WQ.IsTrackerShowParty() local p = ActiveProfile(); return p and p.trackerShowParty or false end
+function WQ.SetTrackerShowParty(on)
+    local p = ActiveProfile(); if p then p.trackerShowParty = on and true or false end
     if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
 end
 
@@ -1440,7 +1507,7 @@ end
 -- Snapshot for the HUD: { name, isPlayer, cds = { [cdKey] = remaining (0 = ready) } } per warlock.
 function WQ.GetTrackerSnapshot()
     local rows = {}
-    for _, wl in ipairs(RaidWarlocks()) do
+    for _, wl in ipairs(GroupWarlocks()) do
         local cds = {}
         for _, key in ipairs(TRACKED_ORDER) do
             cds[key] = GetCooldownRemaining(key, wl.name)
@@ -1546,10 +1613,15 @@ function WQ.SetConsumablesEnabled(on)
     if WQ.UpdateConsumablesHUDVisibility   then WQ.UpdateConsumablesHUDVisibility()   end
 end
 
--- Per-profile "auto-show the HUD in a raid" flag (raid-only, like the cooldown tracker).
+-- Per-profile "auto-show the HUD" flags: raid (default on) + party dungeon (default off).
 function WQ.IsConsumeShowRaid() local p = ActiveProfile(); return p and p.consumeShowRaid or false end
 function WQ.SetConsumeShowRaid(on)
     local p = ActiveProfile(); if p then p.consumeShowRaid = on and true or false end
+    if WQ.UpdateConsumablesHUDVisibility then WQ.UpdateConsumablesHUDVisibility() end
+end
+function WQ.IsConsumeShowParty() local p = ActiveProfile(); return p and p.consumeShowParty or false end
+function WQ.SetConsumeShowParty(on)
+    local p = ActiveProfile(); if p then p.consumeShowParty = on and true or false end
     if WQ.UpdateConsumablesHUDVisibility then WQ.UpdateConsumablesHUDVisibility() end
 end
 
@@ -1830,20 +1902,6 @@ function WQ.SetRangeFontSize(n)
     if WQ.ApplyRangeFont then WQ.ApplyRangeFont() end
 end
 
--- Per-profile UI font (Settings page). Stored as a key into WQ.FONTS; the UI's WQ.ReapplyFont
--- resolves it to a path and repaints every fontstring (menus + all HUDs) at once.
-function WQ.GetFont()
-    local p = ActiveProfile()
-    local key = p and p.font
-    if key and WQ.FONTS[key] then return key end
-    return "arialn"
-end
-function WQ.SetFont(key)
-    if not WQ.FONTS[key] then return end
-    local p = ActiveProfile(); if p then p.font = key end
-    if WQ.ReapplyFont then WQ.ReapplyFont() end   -- live repaint (defined in the UI file)
-end
-
 -- Per-profile accent colour (Settings page). Stored as a 6-hex string; the UI's WQ.ReapplyAccent
 -- mutates THEME.accent and repaints every accented element.
 function WQ.GetAccent()
@@ -1953,8 +2011,7 @@ function WQ.SwitchProfile(name)
     activeProfile = InitProfile(Warlock_Qol_Tbc_DB.profiles[name])
     EnsureProfileSeeded()
     UpdateCombatLogRegistration()   -- the new profile's announcer flags may differ
-    if WQ.ReapplyFont then WQ.ReapplyFont() end   -- the new profile may pick a different font
-    if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- ...and a different accent colour
+    if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- the new profile may pick a different accent colour
     if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- ...and a different backdrop opacity
     return true
 end
@@ -2027,7 +2084,6 @@ function WQ.HardReset()
     ResolveActiveBinding()                       -- recreate this char's default-seeded profile + binding
 
     UpdateCombatLogRegistration()                -- listener state reset with the fresh (all-ON) flags
-    if WQ.ReapplyFont then WQ.ReapplyFont() end  -- back to the default font
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- back to the default accent colour
     if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- back to the default backdrop opacity
     print(("|cff9900ffWarlockQol|r: reset EVERYTHING to defaults (all profiles and settings) and removed %d macro(s)."):format(removed))
@@ -2186,7 +2242,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "banishEnabled", "trackerEnabled", "trackerShowRaid", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)
@@ -2252,8 +2308,6 @@ local function SanitizeProfile(raw)
     if type(raw.rangeFontSize) == "number" and raw.rangeFontSize >= 8 and raw.rangeFontSize <= 40 then
         p.rangeFontSize = math.floor(raw.rangeFontSize)
     end
-    -- UI font (Settings) — only a known key travels; InitProfile defaults it.
-    if type(raw.font) == "string" and WQ.FONTS[raw.font] then p.font = raw.font end
     -- Accent colour (Settings) — only a well-formed 6-hex string travels; InitProfile defaults it.
     if type(raw.accent) == "string" and raw.accent:match("^%x%x%x%x%x%x$") then p.accent = raw.accent:lower() end
     -- Backdrop opacity (main window + the three HUDs) — only a sane percent travels each; InitProfile

@@ -7,7 +7,7 @@ local WQ = Warlock_Qol_Tbc
 -- ── Window geometry ───────────────────────────────────────────────────────────
 local FRAME_W  = 800   -- default frame width (resizable)
 local FRAME_H  = 600   -- default frame height (resizable)
-local MIN_W, MIN_H = 600, 558   -- shrink limit (fits the 3-section nav, pinned buttons, Profiles Share section)
+local MIN_W, MIN_H = 600, 572   -- shrink limit (fits the tallest page: Settings, now with Setup Guide + Reset)
 local MAX_W, MAX_H = 940, 780   -- grow limit
 local ROW_H    = 26    -- height of each line entry in the scroll list
 local ROW_POOL = 24    -- row frames created per list (enough for MAX_H); visible count computed from list height
@@ -15,7 +15,7 @@ local ROW_POOL = 24    -- row frames created per list (enough for MAX_H); visibl
 local PAD        = 8    -- outer/gutter padding between the chrome pieces
 local TITLEBAR_H = 30   -- height of the top title strip (brand + close button)
 local SIDEBAR_W  = 160  -- fixed width of the left nav column
-local NAV_H      = 26   -- height of each nav item
+local NAV_H      = 24   -- height of each nav item
 
 -- Raid marker tokens → icon number in UI-RaidTargetingIcon_N (1–8), for the line-list preview.
 -- DISPLAY ONLY — the stored line and what SendChatMessage sends stay as the raw token text.
@@ -102,41 +102,41 @@ function WQ.ReapplyAccent()
 end
 
 -- ── Font ─────────────────────────────────────────────────────────────────────
--- The active UI font is chosen on the Settings page (a key into WQ.FONTS, stored per-profile). All
--- choices are stock client fonts (nothing bundled). CURRENT_FONT is the resolved path; the Settings
--- picker swaps it and calls WQ.ReapplyFont, which repaints every fontstring at once. SetFont returns
--- false on a bad/missing .ttf, so we always fall back to a stock font. Default = Arial Narrow.
+-- The UI font is fixed to the stock Arial Narrow (the user-facing picker was removed). SetFont returns
+-- false on a bad/missing .ttf, so we always fall back to another stock font just in case.
 local FONT_DEFAULT  = "Fonts\\ARIALN.TTF"
 local FONT_FALLBACK = STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
-local CURRENT_FONT  = FONT_DEFAULT   -- active path (updated by WQ.ReapplyFont)
 
--- Every styled fontstring is recorded here (keyed by the object, so re-styling just updates its entry)
--- so a font swap can repaint the whole UI + all HUDs in one pass.
-local fontMeta = {}
+-- ── Type scale ──────────────────────────────────────────────────────────────
+-- SINGLE SOURCE OF TRUTH for font sizes. Every ApplyFont call passes a ROLE name from this table
+-- (never a raw number), so retuning the whole UI is one edit here and new features stay consistent.
+-- Think of these like CSS classes. Sizes are points. The three HUDs deliberately REUSE these page
+-- roles from the compact end (title->caption, rows->caption/small) rather than defining their own.
+-- The one exception is the Range HUD's name/range text, whose size is the user's per-profile
+-- `rangeFontSize` setting (8-40pt, driven by LayoutRangeHUD), NOT a scale role.
+local TEXT = {
+    title   = 16,  -- top-of-surface heading: page title, wizard title
+    heading = 13,  -- accent section heading within a surface; home intro prose
+    body    = 12,  -- DEFAULT: labels, buttons, inputs, dropdowns, list rows, subtitles, nav items
+    caption = 11,  -- dim/secondary text: captions, help lines, HUD titles & rows
+    small   = 10,  -- fine print, compact HUD labels, dropdown arrow
+    micro   =  9,  -- tiniest: sidebar section headers
+    brand   = 14,  -- title-bar chrome: product name + window close X
+}
+WQ.TEXT = TEXT   -- exposed so the core/docs can reference the scale
 
--- Set obj's font to the active UI font (size in points, standard flag string), stock fallback on failure.
+-- Set obj's font to the UI font at the given ROLE (a TEXT key; a raw number still works for the
+-- Range HUD's dynamic size). `flags` is the standard flag string; stock font fallback on failure.
 local function ApplyFont(obj, size, flags)
+    if type(size) == "string" then size = TEXT[size] or TEXT.body end
     flags = flags or ""
-    fontMeta[obj] = { size = size, flags = flags }
-    if not obj:SetFont(CURRENT_FONT, size, flags) then obj:SetFont(FONT_FALLBACK, size, flags) end
+    if not obj:SetFont(FONT_DEFAULT, size, flags) then obj:SetFont(FONT_FALLBACK, size, flags) end
     return obj
 end
 
 -- Italic styling was dropped with the bundled PT Sans (stock fonts have no italic face); kept as an
 -- alias so the few former-italic callers (the quote, the empty-list messages) render in the active font.
 local ApplyFontItalic = ApplyFont
-
--- Repaint every recorded fontstring with the active font. Called from the core on login, profile
--- switch, hard reset, and when the Settings picker changes WQ.GetFont().
-function WQ.ReapplyFont()
-    local key = WQ.GetFont and WQ.GetFont() or "arialn"
-    local opt = WQ.FONTS and WQ.FONTS[key]
-    CURRENT_FONT = (opt and opt.path) or FONT_DEFAULT
-    for obj, m in pairs(fontMeta) do
-        if not obj:SetFont(CURRENT_FONT, m.size, m.flags) then obj:SetFont(FONT_FALLBACK, m.size, m.flags) end
-    end
-    if WQ.ApplyRangeFont then WQ.ApplyRangeFont() end   -- Range HUD width autosizes to the font
-end
 
 -- ── Flat-frame helper ───────────────────────────────────────────────────────────
 -- Flat ElvUI-style backdrop: solid WHITE8X8 fill + optional 1px border (colour is whatever we set).
@@ -261,7 +261,7 @@ logo:SetTexture("Interface\\Icons\\Spell_Shadow_EnslaveDemon")
 logo:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
 local brand = titleBar:CreateFontString(nil, "OVERLAY")
-ApplyFont(brand, 15)
+ApplyFont(brand, "brand")
 brand:SetPoint("LEFT", logo, "RIGHT", 6, 0)
 -- Re-set on accent change (the brand bakes HEX_ACCENT into a |c…| colour code).
 RegisterAccent(function()
@@ -275,7 +275,7 @@ closeBtn:SetPoint("RIGHT", titleBar, "RIGHT", -4, 0)
 ApplyFlat(closeBtn, THEME.field, true)
 
 local closeX = closeBtn:CreateFontString(nil, "OVERLAY")
-ApplyFont(closeX, 15)
+ApplyFont(closeX, "brand")
 closeX:SetPoint("CENTER")
 closeX:SetText("X")
 AccentText(closeX)
@@ -309,7 +309,7 @@ content:SetPoint("BOTTOMRIGHT", f,       "BOTTOMRIGHT", -PAD, PAD)
 -- a wrapped subtitle reflows everything and an empty one collapses the rule up under the title.
 -- ShowPage only sets the subtitle text and toggle state per page.
 local pageTitle = content:CreateFontString(nil, "OVERLAY")
-ApplyFont(pageTitle, 16)
+ApplyFont(pageTitle, "title")
 pageTitle:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -6)
 AccentText(pageTitle)
 
@@ -425,7 +425,7 @@ local function MakeFlatButton(parent, text, w, h)
     ApplyFlat(b, THEME.panel, true)
 
     local fs = b:CreateFontString(nil, "OVERLAY")
-    ApplyFont(fs, 12)
+    ApplyFont(fs, "body")
     fs:SetPoint("CENTER")
     fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     b.label = fs
@@ -476,7 +476,7 @@ end
 local function MakeFlatEditBox(parent)
     local e = CreateFrame("EditBox", nil, parent, "BackdropTemplate")
     ApplyFlat(e, THEME.field, true)
-    ApplyFont(e, 12)
+    ApplyFont(e, "body")
     e:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     e:SetTextInsets(6, 6, 2, 2)
     e:SetAutoFocus(false)
@@ -522,7 +522,7 @@ end
 -- it with the page's syncers so it re-reads on show / profile switch).
 local function MakeOpacityRow(parent, x, y, getter, setter)
     local label = parent:CreateFontString(nil, "OVERLAY")
-    ApplyFont(label, 12)
+    ApplyFont(label, "body")
     label:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     label:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
     label:SetText("Opacity")
@@ -538,7 +538,7 @@ local function MakeOpacityRow(parent, x, y, getter, setter)
     box:SetJustifyH("CENTER")
 
     local pct = parent:CreateFontString(nil, "OVERLAY")
-    ApplyFont(pct, 12)
+    ApplyFont(pct, "body")
     pct:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
     pct:SetPoint("LEFT", box, "RIGHT", 4, 0)
     pct:SetText("%")
@@ -598,7 +598,7 @@ local function MakeMultilineBox(parent, height)
     scroll:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -5,  4)
 
     local edit = CreateFrame("EditBox", nil, scroll)
-    ApplyFont(edit, 11)
+    ApplyFont(edit, "caption")
     edit:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     edit:SetMultiLine(true)
     edit:SetAutoFocus(false)
@@ -677,7 +677,7 @@ local function MakeDropdown(parent, width)
 
     -- Selected-value/placeholder label (left), clipped short of the arrow.
     local label = dd:CreateFontString(nil, "OVERLAY")
-    ApplyFont(label, 12)
+    ApplyFont(label, "body")
     label:SetPoint("LEFT",  dd, "LEFT",   8, 0)
     label:SetPoint("RIGHT", dd, "RIGHT", -20, 0)
     label:SetJustifyH("LEFT")
@@ -687,7 +687,7 @@ local function MakeDropdown(parent, width)
 
     -- Down-arrow affordance on the right (plain "v").
     local arrow = dd:CreateFontString(nil, "OVERLAY")
-    ApplyFont(arrow, 10)
+    ApplyFont(arrow, "small")
     arrow:SetPoint("RIGHT", dd, "RIGHT", -7, 0)
     arrow:SetText("v")
     arrow:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
@@ -731,7 +731,7 @@ local function MakeDropdown(parent, width)
                 hl:SetAllPoints()
                 AccentFill(hl, 0.20)
                 local rfs = r:CreateFontString(nil, "OVERLAY")
-                ApplyFont(rfs, 12)
+                ApplyFont(rfs, "body")
                 rfs:SetPoint("LEFT",  r, "LEFT",   8, 0)
                 rfs:SetPoint("RIGHT", r, "RIGHT", -6, 0)
                 rfs:SetJustifyH("LEFT")
@@ -751,14 +751,6 @@ local function MakeDropdown(parent, width)
             r:SetPoint("TOPLEFT",  list, "TOPLEFT",   2, -2 - (i - 1) * DD_ROW_H)
             r:SetPoint("TOPRIGHT", list, "TOPRIGHT", -2, -2 - (i - 1) * DD_ROW_H)
             r.fs:SetText(text)
-            -- Optional per-option font preview (the Settings font picker): render each row in its own
-            -- typeface. Raw SetFont + drop from fontMeta so WQ.ReapplyFont never repaints these previews.
-            local pf = dd.optionFonts and dd.optionFonts[i]
-            if pf and r.fs:SetFont(pf, 14, "") then
-                fontMeta[r.fs] = nil
-            else
-                ApplyFont(r.fs, 12)
-            end
             local capText = text   -- capture per-row for the closure
             r:SetScript("OnClick", function()
                 CloseList()
@@ -792,9 +784,8 @@ local function MakeDropdown(parent, width)
     end)
 
     -- Public API -----------------------------------------------------------------
-    function dd:SetOptions(l, fonts)
+    function dd:SetOptions(l)
         self.options = l or {}
-        self.optionFonts = fonts   -- optional parallel array of font paths for per-row previews
         self.empty = (#self.options == 0)
         if list:IsShown() then RebuildRows() end
     end
@@ -815,7 +806,7 @@ end
 
 -- Description line under the title. Word-wrap ON so it auto-grows; everything below hangs off its bottom.
 pageSubtitle = content:CreateFontString(nil, "OVERLAY")
-ApplyFont(pageSubtitle, 12)
+ApplyFont(pageSubtitle, "body")
 pageSubtitle:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
 -- Left x-offset MUST match pageTitle's (4) so it lines up flush under the title.
 pageSubtitle:SetPoint("TOPLEFT",  content, "TOPLEFT",   4, -28)
@@ -842,7 +833,7 @@ enableCheck:SetScript("OnClick", function(self)
 end)
 
 enableLabel = content:CreateFontString(nil, "OVERLAY")
-ApplyFont(enableLabel, 12)
+ApplyFont(enableLabel, "body")
 enableLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
 enableLabel:SetPoint("RIGHT", enableCheck, "LEFT", -4, 0)
 enableLabel:SetText("Enabled")
@@ -851,14 +842,14 @@ enableLabel:SetText("Enabled")
 -- Title-bar override that disables EVERY feature at once (reachable from any page). Doesn't touch the
 -- per-feature toggles, so turning it back on restores each. Same flat checkbox (accent=on, red=off).
 local masterLabel = titleBar:CreateFontString(nil, "OVERLAY")
-ApplyFont(masterLabel, 12)
+ApplyFont(masterLabel, "caption")
 masterLabel:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
 masterLabel:SetText("Enabled")
 
 -- Minimap-icon toggle label, created now (before positioning) so both toggles centre as one group.
 -- Checked = button shown. Per-character (WQ.Is/SetMinimapHidden, defined with the button).
 local minimapLabel = titleBar:CreateFontString(nil, "OVERLAY")
-ApplyFont(minimapLabel, 12)
+ApplyFont(minimapLabel, "caption")
 minimapLabel:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
 minimapLabel:SetText("Minimap Icon")
 
@@ -949,7 +940,7 @@ local function BuildLineList(parent, yTop, accessors)
     -- Empty-state message (italic, dim) shown where the rows would be when the list is empty. Distinct
     -- from the per-row "(empty line…)" marker for a blank entry within a non-empty list.
     local emptyMsg = parent:CreateFontString(nil, "OVERLAY")
-    ApplyFontItalic(emptyMsg, 12)
+    ApplyFontItalic(emptyMsg, "body")
     emptyMsg:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
     emptyMsg:SetPoint("TOPLEFT", scrollFrame, "TOPLEFT", 4, -6)
     emptyMsg:SetText("No lines added yet...")
@@ -1034,18 +1025,19 @@ local function BuildLineList(parent, yTop, accessors)
             bg:SetColorTexture(0.07, 0.07, 0.07, 0.9)
         end
 
-        -- Ordinal number column, right-aligned in a fixed-width box so multi-digit numbers stay aligned.
+        -- Ordinal number column, LEFT-aligned flush to the row's left edge (2px inset, mirroring the
+        -- Edit/X buttons' 2px inset on the right) so the numbers line up under the first demon tab.
         local num = row:CreateFontString(nil, "OVERLAY")
-        ApplyFont(num, 12)
+        ApplyFont(num, "body")
         num:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
-        num:SetPoint("LEFT", row, "LEFT", 6, 0)
+        num:SetPoint("LEFT", row, "LEFT", 2, 0)
         num:SetWidth(22)
-        num:SetJustifyH("RIGHT")
+        num:SetJustifyH("LEFT")
         row.num = num
 
         -- The line text, between the number column and the Edit/X buttons.
         local text = row:CreateFontString(nil, "OVERLAY")
-        ApplyFont(text, 12)
+        ApplyFont(text, "body")
         text:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
         text:SetPoint("LEFT",  num, "RIGHT", 6,   0)
         text:SetPoint("RIGHT", row, "RIGHT", -74, 0)
@@ -1170,7 +1162,7 @@ local function BuildLineList(parent, yTop, accessors)
 
     -- Single feature-specific help line pinned to the bottom.
     local h1 = parent:CreateFontString(nil, "OVERLAY")
-    ApplyFont(h1, 11)
+    ApplyFont(h1, "caption")
     h1:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", CONTENT_L, 14)
     h1:SetText(accessors.help1 or "")
 
@@ -1188,13 +1180,13 @@ local function OpenMacroUI()
     end
 end
 
--- Macro creation lives in the setup wizard (WQ.CreateAllMacros); resets live on the Reset page.
+-- Macro creation lives in the setup wizard (WQ.CreateAllMacros); resets live on the Settings page.
 -- The per-page "Enabled" checkbox was retired for the shared header toggle (pages opt in via NewPage).
 
 -- ── Reset confirmations ─────────────────────────────────────────────────────────
 -- preferredIndex = 3 uses a high-index popup frame to avoid UI taint.
 
--- Reset page → "Reset Macros": clears every macro we made (demon + ritual + souls).
+-- Settings page → "Reset Macros": clears every macro we made (demon + ritual + souls).
 StaticPopupDialogs["WARLOCK_QOL_TBC_RESET_MACROS"] = {
     text = "Remove ALL macros WarlockQol created?\n\nYour saved lines, feature toggles, and profiles are kept.",
     button1 = YES,
@@ -1203,7 +1195,7 @@ StaticPopupDialogs["WARLOCK_QOL_TBC_RESET_MACROS"] = {
     timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
 
--- Reset page → "Hard Reset": ACCOUNT-WIDE wipe to a fresh install (all profiles, every character's
+-- Settings page → "Hard Reset": ACCOUNT-WIDE wipe to a fresh install (all profiles, every character's
 -- settings, window geometry, this character's macros). Afterwards re-sync the master switch (forced ON).
 StaticPopupDialogs["WARLOCK_QOL_TBC_HARD_RESET"] = {
     text = "Hard reset EVERYTHING?\n\nThis wipes the whole addon back to a fresh install — ALL profiles, every character's lines, toggles and settings, and this character's macros. Nothing is kept.\n\nThis cannot be undone.",
@@ -1226,7 +1218,7 @@ do
 
     -- Flavour epigraph: an italic, dimmed Gul'dan quote; the welcome body anchors to its bottom.
     local quote = home:CreateFontString(nil, "OVERLAY")
-    ApplyFontItalic(quote, 13)
+    ApplyFontItalic(quote, "heading")
     quote:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
     quote:SetPoint("TOPLEFT",  home, "TOPLEFT",   6, -10)
     quote:SetPoint("TOPRIGHT", home, "TOPRIGHT", -16, -10)
@@ -1237,7 +1229,7 @@ do
         "infernal horror.\"\n— Gul'dan")
 
     local body = home:CreateFontString(nil, "OVERLAY")
-    ApplyFont(body, 13)
+    ApplyFont(body, "heading")
     body:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     body:SetPoint("TOPLEFT",  quote, "BOTTOMLEFT",  0, -16)
     body:SetPoint("TOPRIGHT", quote, "BOTTOMRIGHT", 0, -16)
@@ -1248,12 +1240,11 @@ do
         "your demon summons and rituals, automatic Soulstone and Banish announcements, and " ..
         "raid HUDs for cooldowns and missing consumables.\n\n" ..
         "Most chat features run from one-click macros the addon builds for you.\n\n" ..
-        "|cff8788eeImportant!|r Remember to drag/bind your macros to action bars before use. " ..
-        "You can access the setup wizard once more from the |cff8788eereset|r option on the " ..
+        "|cff8788eeImportant!|r\nRemember to drag/bind your macros to action bars before use. " ..
+        "You can access the setup wizard once more from the |cff8788eesettings|r option on the " ..
         "side-menu.\n\n" ..
         "A default profile has been created for you. You can create multiple profiles along " ..
         "with import/exporting from other characters/users.\n\n" ..
-        "Enjoy!\n\n" ..
         "|cff8788eePick a feature from the side-menu to get started!|r\n\n" ..
         "Re-open this window anytime with command |cff8788ee/wq|r or with the minimap icon.")
 end
@@ -1295,7 +1286,7 @@ do
         local tabW  = math.floor((avail - (n - 1) * TAB_GAP) / n)
         if tabW < TAB_MIN_W then tabW = TAB_MIN_W end
         -- Smaller label on narrow tabs so the longest names don't clip (esp. under the stock fallback font).
-        local fontSize = (tabW >= 74) and 12 or 11
+        local fontSize = (tabW >= 74) and "body" or "caption"
         local step = tabW + TAB_GAP
         for i, family in ipairs(WQ.PET_FAMILIES) do
             local btn = familyTabs[family]
@@ -1329,11 +1320,11 @@ do
         end
     end
 
-    -- Demon name status label below the tab row. Left x=42 aligns with the list's LINE TEXT column
-    -- (margin 8 + number column 34) so "Known as: <name>" sits above the first line.
+    -- Demon name status label below the tab row. Left x=10 aligns with the row NUMBER column (margin 8
+    -- + the 2px number inset) so "Known as:"/"Name unknown" sit flush-left under the first demon tab.
     petNameLabel = summon:CreateFontString(nil, "OVERLAY")
-    ApplyFont(petNameLabel, 12)
-    petNameLabel:SetPoint("TOPLEFT", summon, "TOPLEFT", 42, -38)
+    ApplyFont(petNameLabel, "body")
+    petNameLabel:SetPoint("TOPLEFT", summon, "TOPLEFT", 10, -38)
 
     local refreshList = BuildLineList(summon, -58, {
         -- Read the active profile's per-family pool. WQ.ActiveProfile() is nil pre-login
@@ -1361,7 +1352,7 @@ do
         if petName then
             petNameLabel:SetText("|cff00ff00Known as: " .. petName .. "|r")
         else
-            petNameLabel:SetText("|cffff8800Name unknown — summon demon to detect|r")
+            petNameLabel:SetText("|cffff8800Name unknown - summon demon to detect|r")
         end
     end
 
@@ -1405,6 +1396,52 @@ do
     souls.OnPageShow = refreshSouls   -- toggle synced by ShowPage; just redraw the list
 end
 
+-- An "Announce" accent heading (same role as the HUD-page headings) with two "Party" / "Raid" checkboxes
+-- beneath it, pinned just under the page divider (above the line list) on the soulstone & banish pages.
+-- Each toggle is independent and defaults ON; the page's header "Enabled" toggle still overrides both (it
+-- gates the whole feature in the core). The getters treat absent as ON. `y` is the heading's top offset.
+-- Returns a `sync` fn that pushes the stored state into both boxes — call it from the page's OnPageShow so
+-- they track a profile switch.
+local function BuildAnnounceToggles(page, y, getParty, setParty, getRaid, setRaid)
+    local hdr = page:CreateFontString(nil, "OVERLAY")
+    ApplyFont(hdr, "heading")            -- matches the cooldown/consumables/range "HUD" heading size
+    AccentText(hdr)                      -- accent purple, re-tinted on accent change
+    hdr:SetPoint("TOPLEFT", page, "TOPLEFT", 8, y)
+    hdr:SetText("Announce")
+
+    local togY = y - 22                  -- checkbox row sits just under the heading
+    local function box(label, x, get, set)
+        local cb = CreateFrame("CheckButton", nil, page, "UICheckButtonTemplate,BackdropTemplate")
+        cb:SetSize(22, 22)
+        cb:SetPoint("TOPLEFT", page, "TOPLEFT", x, togY)
+        StyleCheckbox(cb)
+        cb:SetScript("OnClick", function(self)
+            set(self:GetChecked())
+            self.RefreshStateColor()
+        end)
+        local fs = page:CreateFontString(nil, "OVERLAY")
+        ApplyFont(fs, "body")
+        fs:SetPoint("LEFT", cb, "RIGHT", 6, 0)
+        fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+        fs:SetText(label)
+        return cb
+    end
+    local party = box("Party", 8,  getParty, setParty)
+    local raid  = box("Raid",  96, getRaid,  setRaid)
+
+    -- Horizontal rule separating the announce controls from the line list below (matches the page rules).
+    local rule = page:CreateTexture(nil, "ARTWORK")
+    rule:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
+    rule:SetPoint("TOPLEFT",  page, "TOPLEFT",  8,   togY - 32)
+    rule:SetPoint("TOPRIGHT", page, "TOPRIGHT", -16, togY - 32)
+    rule:SetHeight(1)
+
+    return function()
+        party:SetChecked(getParty()); party.RefreshStateColor()
+        raid:SetChecked(getRaid());   raid.RefreshStateColor()
+    end
+end
+
 -- ── Soulstone Announcement page ───────────────────────────────────────────────
 -- No macro: fires automatically from the combat log (see core). The header toggle (un)registers the
 -- listener via SetSoulstoneEnabled, so the page just needs the line list.
@@ -1413,7 +1450,11 @@ do
         "When any soulstone is detected (by any warlock in group), a random line is announced to your party/raid.",
         { get = WQ.IsSoulstoneEnabled, set = WQ.SetSoulstoneEnabled })
 
-    local refreshSoulstone = BuildLineList(soulstone, -12, {
+    local syncSoulstoneToggles = BuildAnnounceToggles(soulstone, -8,
+        WQ.IsSoulstonePartyEnabled, WQ.SetSoulstonePartyEnabled,
+        WQ.IsSoulstoneRaidEnabled,  WQ.SetSoulstoneRaidEnabled)
+
+    local refreshSoulstone = BuildLineList(soulstone, -72, {
         get    = function() local p = WQ.ActiveProfile(); return p and p.soulstoneLines end,
         add    = function(text) return WQ.AddSoulstoneLine(text) end,
         update = function(idx, text) return WQ.UpdateSoulstoneLine(idx, text) end,
@@ -1422,7 +1463,10 @@ do
         help1  = "|cff8788eeUse |r|cffaaaaaa{targetName}|r|cff8788ee as a placeholder for who got the soulstone|r",
     })
 
-    soulstone.OnPageShow = refreshSoulstone   -- toggle synced by ShowPage; just redraw the list
+    soulstone.OnPageShow = function()   -- header toggle synced by ShowPage; sync ours + redraw the list
+        syncSoulstoneToggles()
+        refreshSoulstone()
+    end
 end
 
 -- ── Banish Announcement page ──────────────────────────────────────────────────
@@ -1434,6 +1478,11 @@ do
         "When you banish a target, a random line is announced to your party/raid. Spell rank is added automatically.",
         { get = WQ.IsBanishEnabled, set = WQ.SetBanishEnabled })
 
+    -- Party/raid announce toggles at the top of the body (above the Banished/Resisted tabs).
+    local syncBanishToggles = BuildAnnounceToggles(banish, -8,
+        WQ.IsBanishPartyEnabled, WQ.SetBanishPartyEnabled,
+        WQ.IsBanishRaidEnabled,  WQ.SetBanishRaidEnabled)
+
     -- Which pool the list below edits: successful banishes vs. resisted ones.
     local selectedKind = "banished"   -- "banished" | "resisted"
     local refreshBanish               -- forward ref (tabs + refresh reference each other)
@@ -1443,7 +1492,7 @@ do
         { key = "banished", label = "Banished" },
         { key = "resisted", label = "Resisted" },
     }
-    local TAB_GAP, TAB_Y, TAB_W = 4, -8, 110
+    local TAB_GAP, TAB_Y, TAB_W = 4, -72, 110   -- tabs sit below the Announce heading + toggles + rule
     for _, t in ipairs(KIND_TABS) do
         local btn = MakeFlatButton(banish, t.label, TAB_W, 22)
         btn:SetScript("OnClick", function()
@@ -1492,7 +1541,7 @@ do
                WQ.AddBanishLine, WQ.UpdateBanishLine, WQ.DeleteBanishLine
     end
 
-    local refreshList = BuildLineList(banish, -40, {
+    local refreshList = BuildLineList(banish, -104, {
         get    = function()          local l = active();                 return l end,
         add    = function(text)      local _, add = active();            return add(text) end,
         update = function(idx, text) local _, _, upd = active();         return upd(idx, text) end,
@@ -1506,7 +1555,10 @@ do
         refreshList()
     end
 
-    banish.OnPageShow = refreshBanish
+    banish.OnPageShow = function()
+        syncBanishToggles()
+        refreshBanish()
+    end
 end
 
 -- ── Profiles page ─────────────────────────────────────────────────────────────
@@ -1526,13 +1578,13 @@ do
 
     -- Current-profile readout (the active name shown in the accent colour).
     local currentLabel = profiles:CreateFontString(nil, "OVERLAY")
-    ApplyFont(currentLabel, 13)
+    ApplyFont(currentLabel, "heading")
     currentLabel:SetPoint("TOPLEFT", profiles, "TOPLEFT", LABEL_X, -10)
     currentLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
 
     -- Inline error/status line pinned to the page bottom, hidden until something to say.
     local errorMsg = profiles:CreateFontString(nil, "OVERLAY")
-    ApplyFont(errorMsg, 12)
+    ApplyFont(errorMsg, "body")
     errorMsg:SetPoint("BOTTOMLEFT",  profiles, "BOTTOMLEFT",  LABEL_X, 12)
     errorMsg:SetPoint("BOTTOMRIGHT", profiles, "BOTTOMRIGHT", -12, 12)
     errorMsg:SetJustifyH("LEFT")
@@ -1551,7 +1603,7 @@ do
     -- Small helper for a left-gutter caption beside a control row.
     local function RowLabel(text, y)
         local fs = profiles:CreateFontString(nil, "OVERLAY")
-        ApplyFont(fs, 12)
+        ApplyFont(fs, "body")
         fs:SetPoint("TOPLEFT", profiles, "TOPLEFT", LABEL_X, y)
         fs:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
         fs:SetText(text)
@@ -1685,7 +1737,7 @@ do
     shareDivider:SetHeight(1)
 
     local shareHdr = profiles:CreateFontString(nil, "OVERLAY")
-    ApplyFont(shareHdr, 12)
+    ApplyFont(shareHdr, "body")
     shareHdr:SetPoint("TOPLEFT", profiles, "TOPLEFT", LABEL_X, -206)
     AccentText(shareHdr)
     shareHdr:SetText("SHARE PROFILE")
@@ -1829,97 +1881,14 @@ do
     profiles.OnPageShow = RefreshProfilesPage
 end
 
--- ── Reset page (Settings) ─────────────────────────────────────────────────────
--- Two destructive actions behind confirm popups; the core does the work (WQ.ResetMacros keeps
--- everything but macros; WQ.HardReset wipes the entire addon account-wide). This page is just buttons.
-do
-    local reset = NewPage("reset", "Reset",
-        "Clean up the macros WarlockQol created, or reset the whole addon back to a fresh install.")
-
-    local PAD_L, WRAP = 8, -16   -- PAD_L = shared content margin (matches the list pages)
-
-    -- Section 1 — Reset Macros (accent heading).
-    local h1 = reset:CreateFontString(nil, "OVERLAY")
-    ApplyFont(h1, 13)
-    AccentText(h1)
-    h1:SetPoint("TOPLEFT", reset, "TOPLEFT", PAD_L, -6)
-    h1:SetText("Reset Macros")
-
-    local d1 = reset:CreateFontString(nil, "OVERLAY")
-    ApplyFont(d1, 12)
-    d1:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-    d1:SetPoint("TOPLEFT",  reset, "TOPLEFT",  PAD_L, -26)
-    d1:SetPoint("TOPRIGHT", reset, "TOPRIGHT", WRAP,  -26)
-    d1:SetJustifyH("LEFT")
-    d1:SetSpacing(4)
-    d1:SetText("Removes every macro WarlockQol created. Your saved lines, feature toggles, and profiles are all kept — re-create the macros anytime from each feature page.")
-
-    local btn1 = MakeFlatButton(reset, "Reset Macros", 130, 24)
-    btn1:SetPoint("TOPLEFT", reset, "TOPLEFT", PAD_L, -84)
-    btn1:SetScript("OnClick", function() StaticPopup_Show("WARLOCK_QOL_TBC_RESET_MACROS") end)
-
-    -- Divider between the two sections.
-    local div = reset:CreateTexture(nil, "ARTWORK")
-    div:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
-    div:SetPoint("TOPLEFT",  reset, "TOPLEFT",  PAD_L, -120)
-    div:SetPoint("TOPRIGHT", reset, "TOPRIGHT", WRAP,  -120)
-    div:SetHeight(1)
-
-    -- Section 2 — Hard Reset (heading in the DK-red "off" colour to flag it as destructive).
-    local h2 = reset:CreateFontString(nil, "OVERLAY")
-    ApplyFont(h2, 13)
-    h2:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])
-    h2:SetPoint("TOPLEFT", reset, "TOPLEFT", PAD_L, -140)
-    h2:SetText("Hard Reset")
-
-    local d2 = reset:CreateFontString(nil, "OVERLAY")
-    ApplyFont(d2, 12)
-    d2:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-    d2:SetPoint("TOPLEFT",  reset, "TOPLEFT",  PAD_L, -160)
-    d2:SetPoint("TOPRIGHT", reset, "TOPRIGHT", WRAP,  -160)
-    d2:SetJustifyH("LEFT")
-    d2:SetSpacing(4)
-    d2:SetText("Wipes the WHOLE addon back to a fresh install — deletes ALL profiles, every character's lines, feature toggles and settings, and this character's macros. Nothing is kept. This cannot be undone.")
-
-    local btn2 = MakeFlatButton(reset, "Hard Reset", 130, 24)
-    btn2:SetPoint("TOPLEFT", reset, "TOPLEFT", PAD_L, -218)
-    btn2:SetScript("OnClick", function() StaticPopup_Show("WARLOCK_QOL_TBC_HARD_RESET") end)
-
-    -- Divider before the Setup Guide section.
-    local div2 = reset:CreateTexture(nil, "ARTWORK")
-    div2:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
-    div2:SetPoint("TOPLEFT",  reset, "TOPLEFT",  PAD_L, -254)
-    div2:SetPoint("TOPRIGHT", reset, "TOPRIGHT", WRAP,  -254)
-    div2:SetHeight(1)
-
-    -- Section 3 — Setup Guide (re-open the first-run wizard; non-destructive, accent heading).
-    local h3 = reset:CreateFontString(nil, "OVERLAY")
-    ApplyFont(h3, 13)
-    AccentText(h3)
-    h3:SetPoint("TOPLEFT", reset, "TOPLEFT", PAD_L, -274)
-    h3:SetText("Setup Guide")
-
-    local d3 = reset:CreateFontString(nil, "OVERLAY")
-    ApplyFont(d3, 12)
-    d3:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-    d3:SetPoint("TOPLEFT",  reset, "TOPLEFT",  PAD_L, -294)
-    d3:SetPoint("TOPRIGHT", reset, "TOPRIGHT", WRAP,  -294)
-    d3:SetJustifyH("LEFT")
-    d3:SetSpacing(4)
-    d3:SetText("Reopen the first-time welcome window with the intro and the Create Macros button.")
-
-    local btn3 = MakeFlatButton(reset, "Show Setup Guide", 130, 24)
-    btn3:SetPoint("TOPLEFT", reset, "TOPLEFT", PAD_L, -332)
-    btn3:SetScript("OnClick", function() if WQ.ShowWizard then WQ.ShowWizard() end end)
-end
-
--- ── Tracking page (Settings) ──────────────────────────────────────────────────
--- Settings-only page for the Raid Cooldown Tracker (the HUD is a separate frame at the end of the file).
+-- ── Cooldowns page (Party/Raid) ───────────────────────────────────────────────
+-- Settings-only page for the Cooldown Tracker (works in party AND raid; the HUD is a separate frame
+-- at the end of the file).
 -- Header toggle drives trackerEnabled; body = HUD display controls + per-cooldown track toggles.
 -- Checkboxes re-sync on page show (a profile switch can change the flags).
 do
-    local track = NewPage("tracking", "Raid Cooldowns",
-        "Track your raid's warlock cooldowns on a movable HUD. CTRL + click to announce.",
+    local track = NewPage("tracking", "Cooldowns",
+        "Track your party/raid warlocks' cooldowns on a movable HUD. CTRL + click to announce.",
         { get = WQ.IsTrackerEnabled, set = WQ.SetTrackerEnabled })
 
     local PAD_L, WRAP = 8, -16
@@ -1938,7 +1907,7 @@ do
         end)
 
         local fs = track:CreateFontString(nil, "OVERLAY")
-        ApplyFont(fs, 12)
+        ApplyFont(fs, "body")
         fs:SetPoint("LEFT", cb, "RIGHT", 6, 0)
         fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
         fs:SetText(label)
@@ -1950,7 +1919,7 @@ do
     -- Small accent section heading at y.
     local function Heading(text, y)
         local h = track:CreateFontString(nil, "OVERLAY")
-        ApplyFont(h, 13)
+        ApplyFont(h, "heading")
         AccentText(h)
         h:SetPoint("TOPLEFT", track, "TOPLEFT", PAD_L, y)
         h:SetText(text)
@@ -1959,7 +1928,7 @@ do
     -- Dim caption at y.
     local function Caption(text, y)
         local c = track:CreateFontString(nil, "OVERLAY")
-        ApplyFont(c, 11)
+        ApplyFont(c, "caption")
         c:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
         c:SetPoint("TOPLEFT", track, "TOPLEFT", PAD_L, y)
         c:SetText(text)
@@ -1975,8 +1944,9 @@ do
         r:SetHeight(1)
     end
 
-    -- HUD visibility: two independent toggles side by side. LEFT = manual open/close; RIGHT = auto-show
-    -- in a raid. Wrapped in closures because the HUD getter/setters live later in the file.
+    -- HUD visibility: three independent toggles in one row. Show HUD = manual open/close; Auto-show in
+    -- raid / party each open the HUD on entering that instance type. Wrapped in closures because the HUD
+    -- getter/setters live later in the file.
     Heading("HUD", -6)
     CheckRow("Show HUD", -32,
         function() return WQ.IsTrackerHUDOpen() end,  function(v) WQ.SetTrackerHUDOpen(v) end)
@@ -1986,8 +1956,15 @@ do
             WQ.SetTrackerShowRaid(v)
             -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
             if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetTrackerHUDOpen(true) end
-        end, 185)
-    local cap = Caption("Auto-show opens it automatically whenever you're in a raid.", -60)
+        end, 140)   -- shared column grid with the Consumables page (8 / 140 / 272)
+    CheckRow("Auto-show in party", -32,
+        function() return WQ.IsTrackerShowParty() end,
+        function(v)
+            WQ.SetTrackerShowParty(v)
+            -- Enabling while already in a party dungeon won't hit a transition, so open the HUD now.
+            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetTrackerHUDOpen(true) end
+        end, 272)
+    local cap = Caption("Auto-show opens the HUD when you enter a raid or party dungeon (raid on by default, party off).", -60)
     cap:SetPoint("TOPRIGHT", track, "TOPRIGHT", WRAP, -60)
     cap:SetJustifyH("LEFT")
 
@@ -2026,15 +2003,19 @@ do
     track.OnPageShow = WQ.SyncTrackerPage
 end
 
--- ── Missing Consumables page (Raid) ────────────────────────────────────────────
+-- ── Missing Consumables page (Party/Raid) ──────────────────────────────────────
 -- Settings-only page for the Missing Consumables HUD (a separate strip at the end of the file). Header
 -- toggle drives consumablesEnabled; body = HUD show controls + threshold + per-consumable list. Mirrors Tracking.
 do
     local cons = NewPage("consumables", "Missing Consumables",
-        "A HUD that pops up in a raid showing the consumables you're missing or about to lose.",
+        "A HUD that pops up in a party/raid showing the consumables you're missing or about to lose.",
         { get = WQ.IsConsumablesEnabled, set = WQ.SetConsumablesEnabled })
 
     local PAD_L, WRAP = 8, -16
+    -- Shared checkbox column grid so every row lines up. The HUD row uses all three (Show HUD / Auto-show
+    -- in raid / Auto-show in party); the 2-column rows below (Glow/Transparent, Tracked pairs) use COL1/COL2.
+    -- Evenly spaced (132px) and compressed enough that three "Auto-show in ..." labels fit at min width.
+    local COL1, COL2, COL3 = PAD_L, 140, 272
     local syncers = {}   -- widgets to re-sync from their getters on page show
 
     -- Flat checkbox + label row, as on the Tracking page (initial state set by the syncer on page show).
@@ -2048,7 +2029,7 @@ do
             self.RefreshStateColor()
         end)
         local fs = cons:CreateFontString(nil, "OVERLAY")
-        ApplyFont(fs, 12)
+        ApplyFont(fs, "body")
         fs:SetPoint("LEFT", cb, "RIGHT", 6, 0)
         fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
         fs:SetText(label)
@@ -2058,7 +2039,7 @@ do
 
     local function Heading(text, y)
         local h = cons:CreateFontString(nil, "OVERLAY")
-        ApplyFont(h, 13)
+        ApplyFont(h, "heading")
         AccentText(h)
         h:SetPoint("TOPLEFT", cons, "TOPLEFT", PAD_L, y)
         h:SetText(text)
@@ -2066,7 +2047,7 @@ do
     end
     local function Caption(text, y)
         local c = cons:CreateFontString(nil, "OVERLAY")
-        ApplyFont(c, 11)
+        ApplyFont(c, "caption")
         c:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
         c:SetPoint("TOPLEFT", cons, "TOPLEFT", PAD_L, y)
         c:SetPoint("TOPRIGHT", cons, "TOPRIGHT", WRAP, y)
@@ -2082,7 +2063,7 @@ do
         r:SetHeight(1)
     end
 
-    -- HUD show controls: manual "Show HUD" + "Auto-show in raid" (side by side, like Tracking).
+    -- HUD show controls: manual "Show HUD" + "Auto-show in raid" + "Auto-show in party" (one row, like Tracking).
     Heading("HUD", -6)
     Caption("Auto-hides when nothing is missing.", -26)
     CheckRow("Show HUD", -50,
@@ -2093,18 +2074,25 @@ do
             WQ.SetConsumeShowRaid(v)
             -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
             if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetConsumeHUDOpen(true) end
-        end, 185)
+        end, COL2)
+    CheckRow("Auto-show in party", -50,
+        function() return WQ.IsConsumeShowParty() end,
+        function(v)
+            WQ.SetConsumeShowParty(v)
+            -- Enabling while already in a party dungeon won't hit a transition, so open the HUD now.
+            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetConsumeHUDOpen(true) end
+        end, COL3)
     CheckRow("Glow missing icons", -76,
         function() return WQ.IsConsumeGlow() end, function(v) WQ.SetConsumeGlow(v) end)
     CheckRow("Transparent mode", -76,
-        function() return WQ.IsConsumeTransparent() end, function(v) WQ.SetConsumeTransparent(v) end, 185)
+        function() return WQ.IsConsumeTransparent() end, function(v) WQ.SetConsumeTransparent(v) end, COL2)
 
     Rule(-108)
 
     -- Expiry-warning threshold. Stored in seconds; edited here in minutes.
     Heading("Warn before expiry", -124)
     local threshLabel = cons:CreateFontString(nil, "OVERLAY")
-    ApplyFont(threshLabel, 12)
+    ApplyFont(threshLabel, "body")
     threshLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     threshLabel:SetPoint("TOPLEFT", cons, "TOPLEFT", PAD_L, -150)
     threshLabel:SetText("Show a countdown when under")
@@ -2116,7 +2104,7 @@ do
     threshBox:SetMaxLetters(4)
 
     local threshUnit = cons:CreateFontString(nil, "OVERLAY")
-    ApplyFont(threshUnit, 12)
+    ApplyFont(threshUnit, "body")
     threshUnit:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     threshUnit:SetPoint("LEFT", threshBox, "RIGHT", 8, 0)
     threshUnit:SetText("minutes")
@@ -2139,7 +2127,7 @@ do
     Rule(-182)
 
     -- ── Tracked consumables: one checkbox per consumable (data-driven from CONSUMABLE_ORDER), laid out
-    -- two per row (left col PAD_L, right col 185, matching the HUD checkboxes above) to save vertical space.
+    -- two per row (COL1/COL2, the same grid as the HUD checkboxes above) to save vertical space.
     Heading("Tracked Consumables", -198)
     local y = -222
     for i, key in ipairs(WQ.CONSUMABLE_ORDER or {}) do
@@ -2148,7 +2136,7 @@ do
         CheckRow(label, y,
             function() return WQ.IsConsumeTracked(key) end,
             function(v) WQ.SetConsumeTracked(key, v) end,
-            (i % 2 == 1) and PAD_L or 185)   -- odd = left column, even = right
+            (i % 2 == 1) and COL1 or COL2)   -- odd = left column, even = right
         if i % 2 == 0 then y = y - 28 end    -- drop to the next row after each pair
     end
     if #(WQ.CONSUMABLE_ORDER or {}) % 2 == 1 then y = y - 28 end   -- clear a half-filled final row
@@ -2186,7 +2174,7 @@ do
             self.RefreshStateColor()
         end)
         local fs = rng:CreateFontString(nil, "OVERLAY")
-        ApplyFont(fs, 12)
+        ApplyFont(fs, "body")
         fs:SetPoint("LEFT", cb, "RIGHT", 6, 0)
         fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
         fs:SetText(label)
@@ -2196,7 +2184,7 @@ do
 
     local function Heading(text, y)
         local h = rng:CreateFontString(nil, "OVERLAY")
-        ApplyFont(h, 13)
+        ApplyFont(h, "heading")
         AccentText(h)
         h:SetPoint("TOPLEFT", rng, "TOPLEFT", PAD_L, y)
         h:SetText(text)
@@ -2204,7 +2192,7 @@ do
     end
     local function Caption(text, y)
         local c = rng:CreateFontString(nil, "OVERLAY")
-        ApplyFont(c, 11)
+        ApplyFont(c, "caption")
         c:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
         c:SetPoint("TOPLEFT", rng, "TOPLEFT", PAD_L, y)
         c:SetPoint("TOPRIGHT", rng, "TOPRIGHT", WRAP, y)
@@ -2235,7 +2223,7 @@ do
     -- Text size: one control drives both the target name and the range value (points, clamped 8–40).
     Heading("Text size", -140)
     local fontLabel = rng:CreateFontString(nil, "OVERLAY")
-    ApplyFont(fontLabel, 12)
+    ApplyFont(fontLabel, "body")
     fontLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     fontLabel:SetPoint("TOPLEFT", rng, "TOPLEFT", PAD_L, -166)
     fontLabel:SetText("Name & range text size")
@@ -2247,7 +2235,7 @@ do
     fontBox:SetMaxLetters(3)
 
     local fontUnit = rng:CreateFontString(nil, "OVERLAY")
-    ApplyFont(fontUnit, 12)
+    ApplyFont(fontUnit, "body")
     fontUnit:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     fontUnit:SetPoint("LEFT", fontBox, "RIGHT", 8, 0)
     fontUnit:SetText("points")
@@ -2279,8 +2267,10 @@ do
 end
 
 -- ── Settings page (Settings) ───────────────────────────────────────────────────
--- Cross-cutting look-and-feel options, saved to the active profile. First control: the UI font picker
--- (WQ.SetFont repaints everything live via WQ.ReapplyFont). More may join here later.
+-- Cross-cutting look-and-feel options, saved to the active profile: accent colour and the main
+-- window's backdrop opacity. (The UI font is fixed to Arial Narrow: the picker was removed.) Also
+-- hosts three non-look actions moved here 2026-07-20 when the standalone Reset page was removed: the
+-- "Setup Guide" button (re-opens the first-run wizard) and the confirm-gated Reset Macros / Hard Reset.
 do
     local settings = NewPage("settings", "Settings",
         "Customise how the addon looks. These options are saved to the active profile.")
@@ -2288,80 +2278,26 @@ do
     local PAD_L = 8
     local syncers = {}
 
-    local fontHdr = settings:CreateFontString(nil, "OVERLAY")
-    ApplyFont(fontHdr, 13)
-    AccentText(fontHdr)
-    fontHdr:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -6)
-    fontHdr:SetText("Font")
-
-    local fontCap = settings:CreateFontString(nil, "OVERLAY")
-    ApplyFont(fontCap, 11)
-    fontCap:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
-    fontCap:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -26)
-    fontCap:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -26)
-    fontCap:SetJustifyH("LEFT")
-    fontCap:SetText("Sets the font used across the whole addon: menus and HUDs. These fonts all " ..
-                    "come with the game.")
-
-    local fontLabel = settings:CreateFontString(nil, "OVERLAY")
-    ApplyFont(fontLabel, 12)
-    fontLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-    fontLabel:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -62)
-    fontLabel:SetText("UI font")
-
-    -- Map dropdown labels (what the user sees) to WQ.FONTS keys (what we store); the parallel paths
-    -- array lets each row preview in its own typeface.
-    local fontLabels, fontPaths, labelToKey = {}, {}, {}
-    for i, key in ipairs(WQ.FONT_ORDER) do
-        local o = WQ.FONTS[key]
-        fontLabels[i] = o.label
-        fontPaths[i]  = o.path
-        labelToKey[o.label] = key
-    end
-
-    local fontDD = MakeDropdown(settings, 180)
-    fontDD:SetPoint("LEFT", fontLabel, "RIGHT", 10, 0)
-    fontDD:SetOptions(fontLabels, fontPaths)
-    fontDD:SetOnSelect(function(text)
-        local key = labelToKey[text]
-        if key then
-            WQ.SetFont(key)          -- repaints the UI (incl. this dropdown's label) into the new font
-            fontDD:SetValue(text)    -- then show the new selection as the dropdown's value
-        end
-    end)
-
-    local function RefreshFontDD()
-        local o = WQ.FONTS[WQ.GetFont()]
-        fontDD:SetValue(o and o.label or "")
-    end
-    syncers[#syncers + 1] = RefreshFontDD
-
     -- ── Accent colour ────────────────────────────────────────────────────────────
-    local accentRule = settings:CreateTexture(nil, "ARTWORK")
-    accentRule:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
-    accentRule:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -100)
-    accentRule:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -100)
-    accentRule:SetHeight(1)
-
     local accentHdr = settings:CreateFontString(nil, "OVERLAY")
-    ApplyFont(accentHdr, 13)
+    ApplyFont(accentHdr, "heading")
     AccentText(accentHdr)
-    accentHdr:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -114)
+    accentHdr:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -6)
     accentHdr:SetText("Accent colour")
 
     local accentCap = settings:CreateFontString(nil, "OVERLAY")
-    ApplyFont(accentCap, 11)
+    ApplyFont(accentCap, "caption")
     accentCap:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
-    accentCap:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -134)
-    accentCap:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -134)
+    accentCap:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -26)
+    accentCap:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -26)
     accentCap:SetJustifyH("LEFT")
     accentCap:SetText("The highlight colour used across the addon for selections, headings and borders. " ..
                       "Click the swatch to choose your own; the picker previews live.")
 
     local accentLabel = settings:CreateFontString(nil, "OVERLAY")
-    ApplyFont(accentLabel, 12)
+    ApplyFont(accentLabel, "body")
     accentLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-    accentLabel:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -176)
+    accentLabel:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -68)
     accentLabel:SetText("Accent colour")
 
     -- Full-screen catcher so a click OFF the picker cancels it (and stops it dropping behind the app).
@@ -2437,27 +2373,94 @@ do
     -- ── Backdrop opacity ─────────────────────────────────────────────────────────
     local opacityRule = settings:CreateTexture(nil, "ARTWORK")
     opacityRule:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
-    opacityRule:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -208)
-    opacityRule:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -208)
+    opacityRule:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -100)
+    opacityRule:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -100)
     opacityRule:SetHeight(1)
 
     local opacityHdr = settings:CreateFontString(nil, "OVERLAY")
-    ApplyFont(opacityHdr, 13)
+    ApplyFont(opacityHdr, "heading")
     AccentText(opacityHdr)
-    opacityHdr:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -222)
+    opacityHdr:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -114)
     opacityHdr:SetText("Backdrop opacity")
 
     local opacityCap = settings:CreateFontString(nil, "OVERLAY")
-    ApplyFont(opacityCap, 11)
+    ApplyFont(opacityCap, "caption")
     opacityCap:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
-    opacityCap:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -242)
-    opacityCap:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -242)
+    opacityCap:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -134)
+    opacityCap:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -134)
     opacityCap:SetJustifyH("LEFT")
     opacityCap:SetText("How solid this window's background is: lower is more see-through. Text, icons " ..
                        "and borders are unaffected. Each HUD has its own opacity, set on its own page.")
 
     -- The same compact control the HUD pages use, so all four opacities behave identically.
-    syncers[#syncers + 1] = MakeOpacityRow(settings, PAD_L, -292, WQ.GetOpacity, WQ.SetOpacity)
+    syncers[#syncers + 1] = MakeOpacityRow(settings, PAD_L, -184, WQ.GetOpacity, WQ.SetOpacity)
+
+    -- ── Setup Guide (re-open the first-run wizard; non-destructive, moved here from the Reset page) ──
+    local guideRule = settings:CreateTexture(nil, "ARTWORK")
+    guideRule:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
+    guideRule:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -228)
+    guideRule:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -228)
+    guideRule:SetHeight(1)
+
+    local guideHdr = settings:CreateFontString(nil, "OVERLAY")
+    ApplyFont(guideHdr, "heading")
+    AccentText(guideHdr)
+    guideHdr:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -242)
+    guideHdr:SetText("Setup Guide")
+
+    local guideCap = settings:CreateFontString(nil, "OVERLAY")
+    ApplyFont(guideCap, "caption")
+    guideCap:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+    guideCap:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -262)
+    guideCap:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -262)
+    guideCap:SetJustifyH("LEFT")
+    guideCap:SetText("Reopen the first-time welcome window with the intro and the Create Macros button.")
+
+    local guideBtn = MakeFlatButton(settings, "Show Setup Guide", 130, 24)
+    guideBtn:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -292)
+    guideBtn:SetScript("OnClick", function() if WQ.ShowWizard then WQ.ShowWizard() end end)
+
+    -- ── Reset (both confirm-gated; moved here from the old Reset page 2026-07-20) ──
+    -- The full warnings live in the StaticPopups (incl. "cannot be undone"), so the caption stays short.
+    local resetRule = settings:CreateTexture(nil, "ARTWORK")
+    resetRule:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
+    resetRule:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -336)
+    resetRule:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -336)
+    resetRule:SetHeight(1)
+
+    local resetHdr = settings:CreateFontString(nil, "OVERLAY")
+    ApplyFont(resetHdr, "heading")
+    AccentText(resetHdr)
+    resetHdr:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -350)
+    resetHdr:SetText("Reset")
+
+    local resetCap = settings:CreateFontString(nil, "OVERLAY")
+    ApplyFont(resetCap, "caption")
+    resetCap:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+    resetCap:SetPoint("TOPLEFT",  settings, "TOPLEFT",  PAD_L, -370)
+    resetCap:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16,   -370)
+    resetCap:SetJustifyH("LEFT")
+    resetCap:SetText("Remove the macros WarlockQol created (lines, toggles and profiles are kept), or " ..
+                     "hard reset the whole addon back to a fresh install. Both ask you to confirm first.")
+
+    local resetMacrosBtn = MakeFlatButton(settings, "Reset Macros", 130, 24)
+    resetMacrosBtn:SetPoint("TOPLEFT", settings, "TOPLEFT", PAD_L, -404)
+    resetMacrosBtn:SetScript("OnClick", function() StaticPopup_Show("WARLOCK_QOL_TBC_RESET_MACROS") end)
+
+    -- Hard Reset is destructive: flag it with a persistent DK-red label + red hover (overriding the
+    -- flat button's default accent hover), rather than a red section heading like the old page used.
+    local hardResetBtn = MakeFlatButton(settings, "Hard Reset", 130, 24)
+    hardResetBtn:SetPoint("LEFT", resetMacrosBtn, "RIGHT", 10, 0)
+    hardResetBtn:SetScript("OnClick", function() StaticPopup_Show("WARLOCK_QOL_TBC_HARD_RESET") end)
+    hardResetBtn.label:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])
+    hardResetBtn:SetScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])
+        self.label:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])
+    end)
+    hardResetBtn:SetScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
+        self.label:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])
+    end)
 
     function WQ.SyncSettingsPage()
         for _, sync in ipairs(syncers) do sync() end
@@ -2478,17 +2481,15 @@ do
         { label = "Demon Summoning",        page = "summon"    },
         { label = "Ritual of Summoning",    page = "ritual"    },
         { label = "Ritual of Souls",        page = "souls"     },
-        { header = "ANNOUNCEMENTS" },
-        { label = "Soulstone",              page = "soulstone" },
-        { label = "Banish",                 page = "banish"    },
-        { header = "RAID" },
-        { label = "Raid Cooldowns",         page = "tracking"     },
+        { header = "PARTY/RAID" },
+        { label = "Soulstone",              page = "soulstone"    },
+        { label = "Banish",                 page = "banish"       },
+        { label = "Cooldowns",              page = "tracking"     },
         { label = "Consumables",            page = "consumables"  },
         { label = "Range Indicator",        page = "range"        },
         { header = "SETTINGS" },
         { label = "Settings",               page = "settings"  },
         { label = "Profiles",               page = "profiles"  },
-        { label = "Reset",                  page = "reset"     },
     }
     local navButtons = {}
     local y = 4   -- running distance from the sidebar's top edge
@@ -2498,7 +2499,7 @@ do
             -- Section title: dim uppercase label + a thin rule beneath. Not a navButton, so UpdateNav skips it.
             y = y + 8
             local hdr = sidebar:CreateFontString(nil, "OVERLAY")
-            ApplyFont(hdr, 10)
+            ApplyFont(hdr, "micro")
             hdr:SetPoint("TOPLEFT",  sidebar, "TOPLEFT",   8, -y)
             hdr:SetPoint("TOPRIGHT", sidebar, "TOPRIGHT", -4, -y)
             hdr:SetJustifyH("LEFT")
@@ -2532,7 +2533,7 @@ do
             AccentFill(hov, 0.12)
 
             local fs = b:CreateFontString(nil, "OVERLAY")
-            ApplyFont(fs, 12)
+            ApplyFont(fs, "body")
             fs:SetPoint("LEFT", b, "LEFT", 8, 0)
             fs:SetPoint("RIGHT", b, "RIGHT", -4, 0)
             fs:SetJustifyH("LEFT")
@@ -2545,7 +2546,7 @@ do
             b:SetScript("OnClick", function() ShowPage(item.page) end)
             navButtons[#navButtons + 1] = b
 
-            y = y + NAV_H + 2
+            y = y + NAV_H + 1
         end
     end
 
@@ -2574,8 +2575,8 @@ do
     openMacros:SetScript("OnClick", OpenMacroUI)
 end
 
--- ── Raid Cooldown Tracker HUD ────────────────────────────────────────
--- Standalone movable HUD showing each raid warlock's cooldown state ("Ready" or a live countdown),
+-- ── Cooldown Tracker HUD (party/raid) ────────────────────────────────────────
+-- Standalone movable HUD showing each party/raid warlock's cooldown state ("Ready" or a live countdown),
 -- fed by the core tracker (comms + combat-log fallback). Structure vs. ticking are split:
 -- WQ.RefreshTrackerHUD() rebuilds rows only on roster/comms/cast events; the per-frame OnUpdate just
 -- re-reads each visible row's remaining seconds (cheap store-only WQ.GetTrackerRemaining, no roster scan).
@@ -2601,7 +2602,7 @@ do
     hud:SetFrameStrata("MEDIUM")
     hud:SetClampedToScreen(true)
     ApplyFlat(hud, THEME.bg, true)
-    RegisterFill(hud, THEME.bg, WQ.GetTrackerOpacity)   -- own opacity value (Raid Cooldowns page); border solid
+    RegisterFill(hud, THEME.bg, WQ.GetTrackerOpacity)   -- own opacity value (Cooldowns page); border solid
     hud:Hide()
 
     -- Header strip: title (also the visual grip). No mouse, so drags fall through to the hud frame.
@@ -2612,10 +2613,10 @@ do
     ApplyFlat(hudHeader, THEME.panel, true)
 
     local hudTitle = hudHeader:CreateFontString(nil, "OVERLAY")
-    ApplyFont(hudTitle, 12)
+    ApplyFont(hudTitle, "caption")
     hudTitle:SetPoint("LEFT", hudHeader, "LEFT", 6, 0)
     AccentText(hudTitle)
-    hudTitle:SetText("Raid Cooldowns")
+    hudTitle:SetText("Cooldowns")
 
     -- Persistence (position + shown + locked) — a top-level DB table like `ui`.
     local function HUDdb()
@@ -2651,7 +2652,7 @@ do
     closeBtn:SetPoint("RIGHT", hudHeader, "RIGHT", -3, 0)
     ApplyFlat(closeBtn, THEME.field, true)
     local closeX = closeBtn:CreateFontString(nil, "OVERLAY")
-    ApplyFont(closeX, 13)
+    ApplyFont(closeX, "body")
     closeX:SetPoint("CENTER")
     closeX:SetText("X")
     AccentText(closeX)
@@ -2769,13 +2770,13 @@ do
         row.icon = icon
 
         local timer = row:CreateFontString(nil, "OVERLAY")
-        ApplyFont(timer, 12)
+        ApplyFont(timer, "caption")
         timer:SetPoint("RIGHT", row, "RIGHT", -2, 0)
         timer:SetJustifyH("RIGHT")
         row.timer = timer
 
         local name = row:CreateFontString(nil, "OVERLAY")
-        ApplyFont(name, 12)
+        ApplyFont(name, "caption")
         name:SetPoint("LEFT",  icon,  "RIGHT", 5, 0)
         name:SetPoint("RIGHT", timer, "LEFT", -4, 0)   -- clip so a long name can't overrun the timer
         name:SetJustifyH("LEFT")
@@ -2792,7 +2793,7 @@ do
 
     -- Shown when there are no warlocks to display (so the frame isn't a confusing empty box).
     local hudEmpty = hud:CreateFontString(nil, "OVERLAY")
-    ApplyFontItalic(hudEmpty, 11)
+    ApplyFontItalic(hudEmpty, "small")
     hudEmpty:SetPoint("TOP", hudHeader, "BOTTOM", 0, -8)
     hudEmpty:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
     hudEmpty:SetText("No warlocks in group")
@@ -2800,7 +2801,7 @@ do
 
     -- Dim section label above the soulstone rows (separates them from the CD rows). Positioned in Refresh.
     local ssHeader = hud:CreateFontString(nil, "OVERLAY")
-    ApplyFont(ssHeader, 11)
+    ApplyFont(ssHeader, "small")
     ssHeader:SetJustifyH("LEFT")
     ssHeader:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
     ssHeader:SetText("Soulstone Active")
@@ -2931,16 +2932,19 @@ do
     end)
 
     -- Visibility = ONE persisted flag, trackerHUD.open (the "Show HUD" toggle + the X button set it
-    -- directly, so Show HUD always takes effect). The "Auto-show in raid" toggle just drives that flag
-    -- on raid-instance transitions: entering opens, leaving closes. Raid-only feature.
-    -- "In a raid" here means inside a raid INSTANCE (matches the consumables HUD), not merely a raid group —
-    -- GROUP_ROSTER_UPDATE fires at group-join in the world (easily missed/dismissed), so the transition is
-    -- keyed off zoning into the instance instead (driven by the core's PLAYER_ENTERING_WORLD).
-    local function InRaidInstance() return IsInRaid() and select(2, IsInInstance()) == "raid" end
-    local wasInRaid = false   -- last-seen raid-instance state, to detect enter/leave transitions
+    -- directly, so Show HUD always takes effect). The "Auto-show in raid" / "Auto-show in party" toggles
+    -- each drive that flag on their instance transition: entering opens, leaving closes.
+    -- "In a raid/party" here means inside the raid/party INSTANCE (matches the consumables HUD), not merely
+    -- a raid/party group — GROUP_ROSTER_UPDATE fires at group-join in the world (easily missed/dismissed),
+    -- so the transition is keyed off zoning into the instance instead (driven by the core's PLAYER_ENTERING_WORLD).
+    local function InRaidInstance()  return IsInRaid() and select(2, IsInInstance()) == "raid" end
+    -- Party dungeon = a party group (NOT a raid) inside a 5-man instance. Mirrors the raid check.
+    local function InPartyInstance() return IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" end
+    local wasInRaid  = false   -- last-seen raid-instance state, to detect enter/leave transitions
+    local wasInParty = false   -- last-seen party-instance state (independent transition)
 
-    -- Recompute visibility and show/hide. Called on the feature flag, the auto-show toggle, roster
-    -- changes, and zone changes (PLAYER_ENTERING_WORLD drives the raid-instance transition).
+    -- Recompute visibility and show/hide. Called on the feature flag, the auto-show toggles, roster
+    -- changes, and zone changes (PLAYER_ENTERING_WORLD drives the raid/party-instance transitions).
     local function ApplyHUDVisibility()
         local d = HUDdb()
         if not d then hud:Hide(); return end
@@ -2949,6 +2953,12 @@ do
             -- Raid instance entered/left: auto-show opens on entering, closes on leaving.
             if WQ.IsTrackerShowRaid() then d.open = nowRaid and true or false end
             wasInRaid = nowRaid
+        end
+        local nowParty = InPartyInstance()
+        if nowParty ~= wasInParty then
+            -- Party dungeon entered/left: its own auto-show toggle (off by default).
+            if WQ.IsTrackerShowParty() then d.open = nowParty and true or false end
+            wasInParty = nowParty
         end
         -- Master switch also gates the HUD.
         local want = WQ.IsMasterEnabled() and WQ.IsTrackerEnabled() and d.open
@@ -2993,7 +3003,7 @@ do
     local PAD       = 6
     local HEADER_H  = 20
     local BODY_TOP  = PAD + HEADER_H + 4    -- y-offset of the icon row below the header
-    local HUD_W     = 172                   -- fixed; matches the Raid Cooldowns HUD (icons centre within it)
+    local HUD_W     = 172                   -- fixed; matches the Cooldowns HUD (icons centre within it)
 
     -- mm:ss for a minute+, else "Ns". Only called with remaining > 0.
     local function FormatCD(sec)
@@ -3019,7 +3029,7 @@ do
     ApplyFlat(hudHeader, THEME.panel, true)
 
     local hudTitle = hudHeader:CreateFontString(nil, "OVERLAY")
-    ApplyFont(hudTitle, 12)
+    ApplyFont(hudTitle, "caption")
     hudTitle:SetPoint("LEFT", hudHeader, "LEFT", 6, 0)
     AccentText(hudTitle)
     hudTitle:SetText("Missing Consumables")
@@ -3050,13 +3060,13 @@ do
     hud:SetScript("OnDragStop", function() hud:StopMovingOrSizing(); SaveHUDPlacement() end)
 
     -- Close button (far right of the header) — same style as the main window / cooldown HUD.
-    -- Closes the HUD (clears the manual "Show HUD" flag); auto-show re-opens it in a raid.
+    -- Closes the HUD (clears the manual "Show HUD" flag); auto-show re-opens it in a raid/party dungeon.
     local closeBtn = CreateFrame("Button", nil, hudHeader, "BackdropTemplate")
     closeBtn:SetSize(16, 16)
     closeBtn:SetPoint("RIGHT", hudHeader, "RIGHT", -3, 0)
     ApplyFlat(closeBtn, THEME.field, true)
     local closeX = closeBtn:CreateFontString(nil, "OVERLAY")
-    ApplyFont(closeX, 13)
+    ApplyFont(closeX, "body")
     closeX:SetPoint("CENTER")
     closeX:SetText("X")
     AccentText(closeX)
@@ -3126,7 +3136,7 @@ do
         cell.icon = icon
         -- Countdown above the icon (OVERLAY); OUTLINE + shadow makes the small white text read over the art.
         local timer = slot:CreateFontString(nil, "OVERLAY")
-        ApplyFont(timer, 13, "OUTLINE")
+        ApplyFont(timer, "body", "OUTLINE")
         timer:SetPoint("CENTER", slot, "CENTER", 0, 0)
         timer:SetTextColor(1, 1, 1)
         timer:SetShadowColor(0, 0, 0, 1)
@@ -3176,7 +3186,8 @@ do
     -- ONLY missing/low; none → hide completely (no preview, healthy consumables never show) — that data
     -- gate is separate from "open", so "invisible when nothing's missing" always holds.
     local lastSig = nil
-    local wasInRaid = false   -- last-seen raid-instance state, to detect enter/leave transitions
+    local wasInRaid  = false   -- last-seen raid-instance state, to detect enter/leave transitions
+    local wasInParty = false   -- last-seen party-instance state (independent transition)
     local function Evaluate()
         if not WQ.IsConsumablesActive() then hud:Hide(); lastSig = nil; return end
         -- Dead/ghost drops buffs (e.g. Well Fed) — don't nag; re-appears once alive again.
@@ -3188,6 +3199,12 @@ do
         if nowRaid ~= wasInRaid then
             if WQ.IsConsumeShowRaid() and d then d.open = nowRaid and true or false end
             wasInRaid = nowRaid
+        end
+        -- Party dungeon (a party group, not a raid, inside a 5-man instance) — its own toggle, off by default.
+        local nowParty = IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party"
+        if nowParty ~= wasInParty then
+            if WQ.IsConsumeShowParty() and d then d.open = nowParty and true or false end
+            wasInParty = nowParty
         end
         if not (d and d.open) then hud:Hide(); lastSig = nil; return end
 
@@ -3291,7 +3308,7 @@ do
     ApplyFlat(hudHeader, THEME.panel, true)
 
     local hudTitle = hudHeader:CreateFontString(nil, "OVERLAY")
-    ApplyFont(hudTitle, 12)
+    ApplyFont(hudTitle, "caption")
     hudTitle:SetPoint("LEFT", hudHeader, "LEFT", 6, 0)
     AccentText(hudTitle)
     hudTitle:SetText("Range")
@@ -3299,7 +3316,7 @@ do
     -- Target name + range bracket, same white OUTLINE style (WeakAura look). Range anchors below the
     -- name. Font size, width and vertical layout are all set by LayoutRangeHUD (below).
     local nameFS = hud:CreateFontString(nil, "OVERLAY")
-    ApplyFont(nameFS, 16, "OUTLINE")   -- default until LayoutRangeHUD runs at login
+    ApplyFont(nameFS, 15, "OUTLINE")   -- default until LayoutRangeHUD runs at login
     nameFS:SetPoint("TOP", hud, "TOP", 0, -(PAD + HEADER_H + 8))
     nameFS:SetWidth(HUD_MIN_W - TEXT_PAD * 2)
     nameFS:SetWordWrap(false)   -- one line only; the frame widens to fit, so this only bites past HUD_MAX_W
@@ -3309,7 +3326,7 @@ do
     nameFS:SetShadowOffset(1, -1)
 
     local rangeFS = hud:CreateFontString(nil, "OVERLAY")
-    ApplyFont(rangeFS, 16, "OUTLINE")
+    ApplyFont(rangeFS, 15, "OUTLINE")
     rangeFS:SetPoint("TOP", nameFS, "BOTTOM", 0, -2)
     rangeFS:SetJustifyH("CENTER")
     rangeFS:SetTextColor(1, 1, 1)
@@ -3365,7 +3382,7 @@ do
     closeBtn:SetPoint("RIGHT", hudHeader, "RIGHT", -3, 0)
     ApplyFlat(closeBtn, THEME.field, true)
     local closeX = closeBtn:CreateFontString(nil, "OVERLAY")
-    ApplyFont(closeX, 13)
+    ApplyFont(closeX, "body")
     closeX:SetPoint("CENTER")
     closeX:SetText("X")
     AccentText(closeX)
@@ -3640,7 +3657,7 @@ end
 -- ── First-run Setup Wizard ─────────────────────────────────────────────────────
 -- One-page standalone welcome window shown once per character (PLAYER_LOGIN calls WQ.ShowWizard when
 -- setupComplete is unset): intro + Create Macros; Finish dismisses it and opens the hub. Re-openable
--- from the Reset page. A Hard Reset resets setupComplete, so it returns on the next /reload.
+-- from the Settings page. A Hard Reset resets setupComplete, so it returns on the next /reload.
 -- IMPORTANT: setupComplete is set by FinishWizard, NOT on open (a mid-way /reload re-shows it), and the
 -- frame is deliberately NOT a UISpecialFrame / does NOT complete on OnHide (see below).
 do
@@ -3665,9 +3682,9 @@ do
     -- it auto-opens, and the old OnHide completion then flipped the flag + opened the hub (the "flash" bug).
     -- Dismissal is the Finish button only.
 
-    -- Title + divider (fixed offsets, like the Reset page).
+    -- Title + divider (fixed offsets).
     local title = wiz:CreateFontString(nil, "OVERLAY")
-    ApplyFont(title, 16)
+    ApplyFont(title, "title")
     title:SetPoint("TOPLEFT", wiz, "TOPLEFT", P, -P)
     AccentText(title)
     title:SetText("Welcome to WarlockQol")
@@ -3680,7 +3697,7 @@ do
 
     -- Intro body (accent inline highlights via HEX_ACCENT).
     local body = wiz:CreateFontString(nil, "OVERLAY")
-    ApplyFont(body, 12)
+    ApplyFont(body, "caption")
     body:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     body:SetPoint("TOPLEFT",  wiz, "TOPLEFT",  P,  -(P + 40))
     body:SetPoint("TOPRIGHT", wiz, "TOPRIGHT", -P, -(P + 40))
@@ -3698,7 +3715,7 @@ do
 
     -- Status line above the button row: a combat note (offRed) or a create-result message (accent).
     local status = wiz:CreateFontString(nil, "OVERLAY")
-    ApplyFont(status, 12)
+    ApplyFont(status, "caption")
     status:SetJustifyH("LEFT")
     status:SetSpacing(4)
     status:SetPoint("BOTTOMLEFT",  wiz, "BOTTOMLEFT",  P, P + 34)

@@ -2,6 +2,22 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.21] - 2026-07-20
+
+#### Added
+- **Soulstone** and **Banish** announcements each gained independent **Announce in party** and
+  **Announce in raid** toggles (both on by default), so you can choose which group type they fire in.
+  The top-right Enabled switch still turns the whole feature off.
+- **Cooldowns** and **Missing Consumables** now work in a **party** as well as a raid, each with a new
+  **Auto-show in party** option (off by default). The cooldown tracker now also shows and shares other
+  party members' cooldowns, not just your own.
+
+#### Changed
+- Renamed **Raid Cooldowns** to **Cooldowns** and grouped it with Soulstone, Banish, Consumables and
+  Range Indicator under a single **Party/Raid** menu section.
+- A round of appearance and layout tidy-ups across the menu (spacing, alignment, wording and page
+  organisation) for a cleaner, more consistent look. The addon font is now fixed to the game's Arial Narrow.
+
 ### [0.20] - 2026-07-17
 
 #### Changed
