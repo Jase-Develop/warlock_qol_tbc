@@ -17,3 +17,4 @@ graphify-out/
 
 # Local-only AI project instructions (must not be published to the repo or shipped in releases)
 CLAUDE.md
+.claude/
