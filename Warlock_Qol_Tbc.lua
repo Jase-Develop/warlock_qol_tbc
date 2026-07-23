@@ -1334,6 +1334,73 @@ local function ClearAllCurses()
     return true
 end
 
+-- Curse debuff name for a key (rank-independent, so it matches any rank on the unit), memoised.
+local curseNameByKey = {}
+local function CurseNameByKey(key)
+    local n = curseNameByKey[key]
+    if not n then n = GetSpellNameByID(CURSES[key].baseId); curseNameByKey[key] = n end
+    return n
+end
+
+-- Whether `unit` currently carries curse `key` (a HARMFUL-aura name scan). Returns true when the name
+-- can't be resolved, so a lookup we can't trust never clears a row.
+local function UnitHasCurse(unit, key)
+    local want = CurseNameByKey(key)
+    if not want then return true end
+    for i = 1, 40 do
+        local n = UnitAura(unit, i, "HARMFUL")
+        if not n then break end
+        if n == want then return true end
+    end
+    return false
+end
+
+-- Fixed unit tokens to resolve a stored curse's GUID back to a live unit (the group tokens are added
+-- per call). target/focus/mouseover/boss cover mobs; player + raid/party cover a mind-controlled group
+-- member who got cursed while hostile.
+local RECONCILE_UNITS = { "player", "target", "focus", "mouseover", "boss1", "boss2", "boss3", "boss4", "boss5" }
+
+-- Safety net over the combat-log death events: for any tracked curse whose target we can currently SEE,
+-- clear the row when that unit is dead OR no longer actually carries the curse. The aura re-check is
+-- what catches a curse ending with no SPELL_AURA_REMOVED reaching us: a dispel we were out of range
+-- for, an expiry desync, or a mind-control breaking on a group member. A target we can't see is left
+-- alone (out of range but alive is normal) and relies on UNIT_DIED / the combat-end clear / expiry.
+-- Cheap: the store is capped at a handful of rows and this runs on a slow HUD cadence, not per event.
+-- Returns true if the store changed. Public so the HUD tick can drive it.
+local function ReconcileCurses()
+    if next(curseState) == nil then return false end
+    local seen   -- guid -> unit token, for every unit we can currently query
+    local function note(unit)
+        if UnitExists(unit) then
+            local g = UnitGUID(unit)
+            if g and not (seen and seen[g]) then seen = seen or {}; seen[g] = unit end
+        end
+    end
+    for _, unit in ipairs(RECONCILE_UNITS) do note(unit) end
+    if IsInRaid() then
+        for i = 1, GetNumGroupMembers() do note("raid" .. i) end
+    elseif IsInGroup() then
+        for i = 1, 4 do note("party" .. i) end
+    end
+    if C_NamePlate and C_NamePlate.GetNamePlates then
+        for _, plate in ipairs(C_NamePlate.GetNamePlates()) do
+            local u = plate.namePlateUnitToken or (plate.UnitFrame and plate.UnitFrame.unit)
+            if u then note(u) end
+        end
+    end
+    if not seen then return false end
+    local hit = false
+    for rowKey, e in pairs(curseState) do
+        local unit = seen[e.guid]
+        if unit and (UnitIsDead(unit) or not UnitHasCurse(unit, e.curse)) then
+            curseState[rowKey] = nil
+            hit = true
+        end
+    end
+    return hit
+end
+WQ.ReconcileCurses = ReconcileCurses
+
 -- Record / refresh / drop one curse from a combat-log aura event. Only curses cast by a warlock in MY
 -- group count (InMyGroup, as the soulstone announcer does), so a stranger's curses never appear.
 -- Returns true when the store changed, i.e. when the HUD needs a rebuild.
@@ -1507,11 +1574,14 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- Curse Tracker (BETA) rides this same listener. Its own `if` rather than another elseif: the
         -- announcers above match on spell name, which can never be one of ours, so the two are
         -- independent. Subevent compares come first because this runs on EVERY combat-log event.
-        if subevent == "SPELL_AURA_APPLIED" or subevent == "SPELL_AURA_REFRESH"
-           or subevent == "SPELL_AURA_REMOVED" or subevent == "UNIT_DIED" then
+        -- The three death/despawn subevents all drop a unit's rows: UNIT_DIED (normal kill),
+        -- UNIT_DESTROYED / UNIT_DISSIPATES (a summoned add going away without a normal death).
+        local isGone = subevent == "UNIT_DIED" or subevent == "UNIT_DESTROYED" or subevent == "UNIT_DISSIPATES"
+        if isGone or subevent == "SPELL_AURA_APPLIED" or subevent == "SPELL_AURA_REFRESH"
+           or subevent == "SPELL_AURA_REMOVED" then
             local changed
-            if subevent == "UNIT_DIED" then
-                changed = ClearCursesForGuid(destGUID)   -- the mob died: drop its rows, don't tick them out
+            if isGone then
+                changed = ClearCursesForGuid(destGUID)   -- unit gone: drop its rows, don't tick them out
             else
                 changed = OnCurseAura(subevent, sourceName, sourceFlags, destGUID, destName, destRaidFlags, spellName)
             end
@@ -1542,6 +1612,12 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- Same for the curse HUD, and drop any rows left over from the zone we just left.
         ClearAllCurses()
         if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
+
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        -- Left combat: whatever we were fighting is now dead, despawned, evaded or reset, so any curse
+        -- still in the store is stale. Clears leftovers a missed UNIT_DIED would otherwise strand (a
+        -- wipe/leash fires no death event at all). Live curses re-appear within a second of re-cursing.
+        if ClearAllCurses() and WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
     end
 end)
 
@@ -1583,10 +1659,15 @@ UpdateTrackerRegistration = function()
     UpdateWorldRegistration()
 end
 
--- The curse tracker has no listeners of its own beyond the shared combat log; it only needs the
--- zone-change event for its auto-show transitions.
+-- The curse tracker rides the shared combat log; on top of it, it needs the zone-change event (shared,
+-- for auto-show) and PLAYER_REGEN_ENABLED (its own, to clear stale curses when a fight ends).
 UpdateCursesRegistration = function()
     UpdateWorldRegistration()
+    if CursesActive() then
+        eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+    else
+        eventFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
+    end
 end
 
 -- Re-sync everything the curse tracker owns after the ACTIVE PROFILE changed (switch / copy / reset),

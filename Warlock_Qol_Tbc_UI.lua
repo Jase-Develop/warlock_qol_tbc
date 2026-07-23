@@ -3901,9 +3901,17 @@ do
     local ApplyHUDVisibility   -- forward decl (the tick calls it when a row runs out)
 
     -- Live tick: cheap arithmetic over at most CURSE_MAX_ROWS rows. A row reaching zero re-evaluates
-    -- visibility, which rebuilds and hides the frame when that was the last curse.
-    local acc = 0
+    -- visibility, which rebuilds and hides the frame when that was the last curse. On a slower ~0.5s
+    -- cadence it also reconciles against dead units on screen, a safety net for a missed UNIT_DIED
+    -- (out of combat-log range at the kill); a cleared row goes through ApplyHUDVisibility so an emptied
+    -- list can also hide the frame.
+    local acc, reconAcc = 0, 0
     hud:SetScript("OnUpdate", function(_, elapsed)
+        reconAcc = reconAcc + elapsed
+        if reconAcc >= 0.5 then
+            reconAcc = 0
+            if WQ.ReconcileCurses and WQ.ReconcileCurses() then ApplyHUDVisibility(); return end
+        end
         acc = acc + elapsed
         if acc < 0.25 then return end
         acc = 0
