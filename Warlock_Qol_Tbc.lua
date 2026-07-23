@@ -171,14 +171,24 @@ local function InitProfile(p)
     if p.rangeTransparent  == nil then p.rangeTransparent  = true  end
     if p.rangeHideNoTarget == nil then p.rangeHideNoTarget = false end  -- on = hide HUD when untargeted
     if p.rangeFontSize     == nil then p.rangeFontSize     = 16    end
+    -- Curse Tracker (BETA): everything the user might notice defaults OFF, so the feature stays out of
+    -- the way until someone goes looking for it (cursesEnabled, plus both auto-shows). Inside it the
+    -- four curses default ON (trackedCurses[key]=false disables one, absent = tracked), and
+    -- curseHideInactive hides the HUD entirely while nothing is cursed.
+    if p.cursesEnabled     == nil then p.cursesEnabled     = false end
+    if p.curseShowRaid     == nil then p.curseShowRaid     = false end
+    if p.curseShowParty    == nil then p.curseShowParty    = false end
+    if p.curseHideInactive == nil then p.curseHideInactive = true  end
+    if not p.trackedCurses then p.trackedCurses = {} end
     -- Settings: accent colour (6-hex; default = Warlock purple).
     if p.accent == nil then p.accent = WQ.DEFAULT_ACCENT end
     -- Backdrop opacity (whole percent, default 80): one for the main window (Settings page) plus one
-    -- per standalone HUD (each on that HUD's own page), all independent.
+    -- per standalone HUD (each on that HUD's own page), all five independent.
     if p.opacity        == nil then p.opacity        = WQ.DEFAULT_OPACITY end
     if p.trackerOpacity == nil then p.trackerOpacity = WQ.DEFAULT_OPACITY end
     if p.consumeOpacity == nil then p.consumeOpacity = WQ.DEFAULT_OPACITY end
     if p.rangeOpacity   == nil then p.rangeOpacity   = WQ.DEFAULT_OPACITY end
+    if p.curseOpacity   == nil then p.curseOpacity   = WQ.DEFAULT_OPACITY end
     -- Ensure every pet family has a lines table, even if empty.
     for _, family in ipairs(WQ.PET_FAMILIES) do
         if not p.lines[family] then p.lines[family] = {} end
@@ -1211,12 +1221,165 @@ local function ScanConsumables()
     return out
 end
 
+-- ── Curse Tracker (core: combat-log fed; party AND raid) ──────────────────────
+-- BETA. Shows which raid curses group warlocks currently have out, on ANY mob (not only your target),
+-- with who cast each one and how long it has left. Purely combat-log driven, and deliberately so:
+-- UnitAura can read only a unit we hold a token for (target/focus/nameplate), which would miss every
+-- mob nobody is looking at and could not reliably name the caster. One combat-log event carries the
+-- caster, the target, the target's raid marker and the spell together.
+--
+-- Durations come from a fixed table because the log never reports them. Unlike the cooldown tracker's
+-- fallback this is not a guess: no TBC talent modifies curse duration, so the timer is exact from the
+-- moment we see the event.
+--
+-- Data-driven like TRACKED_COOLDOWNS / CONSUMABLES: adding a curse is a table edit. `baseId` is the
+-- rank 1 spell ID, used ONLY to resolve the localised name (all ranks share it) so matching stays
+-- rank-agnostic and locale-safe, exactly like BanishName().
+local CURSES = {
+    elements = { label = "Elements",     baseId = 1490, duration = 300, icon = "Interface\\Icons\\Spell_Shadow_ChillTouch"       },
+    reckless = { label = "Recklessness", baseId = 704,  duration = 120, icon = "Interface\\Icons\\Spell_Shadow_UnholyStrength"   },
+    weakness = { label = "Weakness",     baseId = 702,  duration = 120, icon = "Interface\\Icons\\Spell_Shadow_CurseOfMannoroth" },
+    tongues  = { label = "Tongues",      baseId = 1714, duration = 30,  icon = "Interface\\Icons\\Spell_Shadow_CurseOfTounges"   },
+}
+-- Stable iteration order (UI checkbox order).
+local CURSE_ORDER = { "elements", "reckless", "weakness", "tongues" }
+
+-- Hard cap on HUD rows. A trash pull with several warlocks can curse a lot of mobs at once; past this
+-- the list stops being readable, and the snapshot is sorted so the rows that survive are the ones that
+-- matter (own curses, then soonest to drop).
+local CURSE_MAX_ROWS = 6
+
+-- Runtime store (NOT saved): curseState["<destGUID>:<curseKey>"] = entry. Keyed that way because TBC
+-- allows one curse PER CASTER per target, so several warlocks' different curses coexist on one mob and
+-- each needs its own row, while the same curse recast by a second warlock simply replaces the first.
+local curseState = {}
+
+-- Localised spell name -> curse key, memoised. Only a COMPLETE map is cached: spell data can be
+-- unavailable for a moment early in the login sequence, and caching a partial map would blind us to a
+-- curse for the rest of the session.
+local curseByName
+local function CurseKeyForSpell(spellName)
+    if not spellName then return nil end
+    if curseByName then return curseByName[spellName] end
+    local map, complete = {}, true
+    for key, spec in pairs(CURSES) do
+        local n = GetSpellNameByID(spec.baseId)
+        if n then map[n] = key else complete = false end
+    end
+    if complete then curseByName = map end   -- otherwise retry on the next event
+    return map[spellName]
+end
+
+-- Row icon: prefer the client's own art for the spell, falling back to the hardcoded path.
+local curseIcons = {}
+local function CurseIcon(key)
+    local icon = curseIcons[key]
+    if not icon then
+        local spec = CURSES[key]
+        icon = GetSpellTextureByID(spec.baseId) or spec.icon
+        curseIcons[key] = icon
+    end
+    return icon
+end
+
+-- Feature active for this character (master switch + per-profile flag).
+local function CursesActive()
+    return FeatureOn("cursesEnabled")
+end
+
+-- Whether a curse is tracked (per-profile trackedCurses; absent = tracked, only false disables).
+local function IsCurseTracked(key)
+    local p = ActiveProfile()
+    if not p then return true end
+    local v = p.trackedCurses and p.trackedCurses[key]
+    if v == nil then return true end
+    return v and true or false
+end
+
+-- The target's raid marker (1-8) or nil. destRaidFlags carries it as a COMBATLOG_OBJECT_RAIDTARGET1..8
+-- bitmask, so the skull/cross icon comes free off the event: no GUID-to-unit resolution and no
+-- nameplate scan. It is a snapshot from when the curse landed, so a marker changed afterwards stays
+-- stale until that curse is refreshed.
+local function RaidMarker(raidFlags)
+    if not raidFlags or raidFlags == 0 then return nil end
+    for i = 1, 8 do
+        if bit.band(raidFlags, bit.lshift(1, i - 1)) ~= 0 then return i end
+    end
+    return nil
+end
+
+-- Drop expired rows. Called on every application (the only path that grows the table), so the store
+-- stays bounded even while the HUD is hidden and nothing is reading the snapshot.
+local function PruneCurses()
+    local now = GetTime()
+    for rowKey, e in pairs(curseState) do
+        if e.expires - now <= 0 then curseState[rowKey] = nil end
+    end
+end
+
+-- Forget every row on one mob. Fired by UNIT_DIED so a dead target's curses vanish instead of ticking
+-- down to nothing. Returns true if anything was removed (the caller only refreshes the HUD then).
+local function ClearCursesForGuid(guid)
+    if not guid then return false end
+    local hit = false
+    for rowKey, e in pairs(curseState) do
+        if e.guid == guid then curseState[rowKey] = nil; hit = true end
+    end
+    return hit
+end
+
+local function ClearAllCurses()
+    if next(curseState) == nil then return false end
+    wipe(curseState)
+    return true
+end
+
+-- Record / refresh / drop one curse from a combat-log aura event. Only curses cast by a warlock in MY
+-- group count (InMyGroup, as the soulstone announcer does), so a stranger's curses never appear.
+-- Returns true when the store changed, i.e. when the HUD needs a rebuild.
+local function OnCurseAura(subevent, sourceName, sourceFlags, destGUID, destName, destRaidFlags, spellName)
+    if not CursesActive() then return false end
+    local key = CurseKeyForSpell(spellName)
+    if not key or not destGUID then return false end
+    local rowKey = destGUID .. ":" .. key
+
+    if subevent == "SPELL_AURA_REMOVED" then
+        -- Clear the row however the curse ended (expired, dispelled, or replaced by the same warlock's
+        -- next curse), but ONLY if the removal belongs to the caster we have stored. When one warlock's
+        -- curse overwrites another's on the same mob, the removal of the old one and the application of
+        -- the new one are two events on this same row key, and an out-of-order pair would otherwise
+        -- delete the row that had just been created for the new caster.
+        local e = curseState[rowKey]
+        if e and (sourceName == nil or e.caster == StripRealm(sourceName)) then
+            curseState[rowKey] = nil
+            return true
+        end
+        return false
+    end
+
+    if not InMyGroup(sourceFlags) then return false end
+    -- Note: an UNTRACKED curse is still stored. Filtering happens in GetCurseSnapshot, so ticking a
+    -- curse back on shows the ones already out instead of waiting for them to be recast.
+    PruneCurses()
+    curseState[rowKey] = {
+        guid    = destGUID,
+        curse   = key,
+        caster  = StripRealm(sourceName) or "?",
+        isMine  = IsMine(sourceFlags),
+        target  = StripRealm(destName) or "?",
+        marker  = RaidMarker(destRaidFlags),
+        expires = GetTime() + CURSES[key].duration,
+    }
+    return true
+end
+
 -- ── Event frame ───────────────────────────────────────────────────────────────
 local eventFrame = CreateFrame("Frame")
 
 -- Forward decls (defined below the OnEvent handler, which calls them).
-local UpdateCombatLogRegistration   -- shared combat-log listener (soulstone + banish)
+local UpdateCombatLogRegistration   -- shared combat-log listener (soulstone + banish + tracker + curses)
 local UpdateTrackerRegistration     -- Raid CD Tracker listeners (comms + roster)
+local UpdateCursesRegistration      -- Curse Tracker listeners (zone change, for auto-show)
 
 eventFrame:RegisterEvent("ADDON_LOADED")           -- an addon finished loading
 eventFrame:RegisterEvent("PLAYER_LOGIN")           -- UI (incl. chat) ready
@@ -1282,12 +1445,17 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         UpdateTrackerRegistration()
         RequestTrackerSync()
 
+        -- Curse Tracker: no listeners of its own beyond the shared combat log + the zone-change event.
+        UpdateCursesRegistration()
+
         -- Restore the standalone HUDs (defined in the UI file) + position the minimap button.
         if WQ.InitTrackerHUD then WQ.InitTrackerHUD() end
 
         if WQ.InitConsumablesHUD then WQ.InitConsumablesHUD() end
 
         if WQ.InitRangeHUD then WQ.InitRangeHUD() end
+
+        if WQ.InitCursesHUD then WQ.InitCursesHUD() end
 
         if WQ.InitMinimap then WQ.InitMinimap() end
 
@@ -1313,8 +1481,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
         -- Registered only while an announcer is on. Soulstone keys off the CAST (SPELL_CAST_SUCCESS
         -- fires once; aura events re-fire on range/desync) and only when it involves my group.
-        -- Args: sourceFlags(6), destName(9), destFlags(10), spellId(12), missType(15).
-        local _, subevent, _, _, sourceName, sourceFlags, _, _, destName, destFlags, _, spellId, spellName, _, missType = CombatLogGetCurrentEventInfo()
+        -- Args: sourceFlags(6), destGUID(8), destName(9), destFlags(10), destRaidFlags(11),
+        -- spellId(12), missType(15). destGUID/destRaidFlags feed the Curse Tracker (row key + marker).
+        local _, subevent, _, _, sourceName, sourceFlags, _, destGUID, destName, destFlags, destRaidFlags, spellId, spellName, _, missType = CombatLogGetCurrentEventInfo()
         if subevent == "SPELL_CAST_SUCCESS" and spellName == SOULSTONE_SPELL_NAME then
             if InMyGroup(sourceFlags) or InMyGroup(destFlags) then
                 SaySoulstone(destName)
@@ -1335,6 +1504,23 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             end
         end
 
+        -- Curse Tracker (BETA) rides this same listener. Its own `if` rather than another elseif: the
+        -- announcers above match on spell name, which can never be one of ours, so the two are
+        -- independent. Subevent compares come first because this runs on EVERY combat-log event.
+        if subevent == "SPELL_AURA_APPLIED" or subevent == "SPELL_AURA_REFRESH"
+           or subevent == "SPELL_AURA_REMOVED" or subevent == "UNIT_DIED" then
+            local changed
+            if subevent == "UNIT_DIED" then
+                changed = ClearCursesForGuid(destGUID)   -- the mob died: drop its rows, don't tick them out
+            else
+                changed = OnCurseAura(subevent, sourceName, sourceFlags, destGUID, destName, destRaidFlags, spellName)
+            end
+            -- One call, not a refresh plus a visibility check: a first curse landing (or the last one
+            -- dropping) can change whether the HUD is shown at all, since "Hide when no curses are
+            -- active" is data-gated, and the visibility pass rebuilds the rows whenever it ends up shown.
+            if changed and WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
+        end
+
     elseif event == "CHAT_MSG_ADDON" then
         -- Registered only while the tracker is active. Filter to our prefix.
         local prefix, message, _, sender = ...
@@ -1353,6 +1539,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- a zone change, so drive the tracker's auto-show transitions off this event too.
         if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
         if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+        -- Same for the curse HUD, and drop any rows left over from the zone we just left.
+        ClearAllCurses()
+        if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
     end
 end)
 
@@ -1362,11 +1551,22 @@ UpdateCombatLogRegistration = function()
     local cs = CharState()
     local p  = ActiveProfile()
     local want = cs and cs.masterEnabled and p
-                 and (p.soulstoneEnabled or p.banishEnabled or p.trackerEnabled)
+                 and (p.soulstoneEnabled or p.banishEnabled or p.trackerEnabled or p.cursesEnabled)
     if want then
         eventFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
     else
         eventFrame:UnregisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+    end
+end
+
+-- PLAYER_ENTERING_WORLD drives the raid/party-instance auto-show transitions for BOTH the cooldown HUD
+-- and the curse HUD, so it is registered while EITHER is active and owned by neither (each feature's
+-- own Update*Registration handles its other events, then calls this).
+local function UpdateWorldRegistration()
+    if TrackerActive() or CursesActive() then
+        eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")   -- fires on zone-in (raid/party instance entry)
+    else
+        eventFrame:UnregisterEvent("PLAYER_ENTERING_WORLD")
     end
 end
 
@@ -1376,12 +1576,25 @@ UpdateTrackerRegistration = function()
     if TrackerActive() then
         eventFrame:RegisterEvent("CHAT_MSG_ADDON")
         eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
-        eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")   -- fires on zone-in (raid/party instance entry)
     else
         eventFrame:UnregisterEvent("CHAT_MSG_ADDON")
         eventFrame:UnregisterEvent("GROUP_ROSTER_UPDATE")
-        eventFrame:UnregisterEvent("PLAYER_ENTERING_WORLD")
     end
+    UpdateWorldRegistration()
+end
+
+-- The curse tracker has no listeners of its own beyond the shared combat log; it only needs the
+-- zone-change event for its auto-show transitions.
+UpdateCursesRegistration = function()
+    UpdateWorldRegistration()
+end
+
+-- Re-sync everything the curse tracker owns after the ACTIVE PROFILE changed (switch / copy / reset),
+-- since all of its flags live on the profile. The callers already re-run UpdateCombatLogRegistration.
+local function SyncCursesToProfile()
+    ClearAllCurses()   -- rows were collected under the old profile's tracked-curse set
+    UpdateCursesRegistration()
+    if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
 end
 
 -- Per-feature flags live on the active profile; the master switch is per-character (CharState).
@@ -1460,6 +1673,8 @@ function WQ.SetMasterEnabled(on)
     if WQ.UpdateConsumablesHUDVisibility then WQ.UpdateConsumablesHUDVisibility() end
     if WQ.UpdateRangeRegistration        then WQ.UpdateRangeRegistration()        end
     if WQ.UpdateRangeHUDVisibility       then WQ.UpdateRangeHUDVisibility()       end
+    UpdateCursesRegistration()
+    if WQ.UpdateCursesHUDVisibility      then WQ.UpdateCursesHUDVisibility()      end
 end
 
 -- ── Raid CD Tracker public API ────────────────────────────────────────────────
@@ -1942,9 +2157,9 @@ function WQ.SetAccent(hex)
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end   -- live repaint (defined in the UI file)
 end
 
--- Per-profile backdrop opacity, a whole percent 0-100. There are FOUR independent values, each with the
+-- Per-profile backdrop opacity, a whole percent 0-100. There are FIVE independent values, each with the
 -- same shape: the main window (`opacity`, Settings page) plus one per standalone HUD (`trackerOpacity`,
--- `consumeOpacity`, `rangeOpacity`, each on that HUD's own page). The UI's WQ.ReapplyOpacity repaints
+-- `consumeOpacity`, `rangeOpacity`, `curseOpacity`, each on that HUD's own page). WQ.ReapplyOpacity repaints
 -- every registered frame fill, each frame reading its own value.
 local OPACITY_MIN, OPACITY_MAX = 0, 100
 -- Read `field` off the active profile, clamped, defaulting when absent/pre-login.
@@ -1973,6 +2188,8 @@ function WQ.GetConsumeOpacity()  return ReadOpacity("consumeOpacity") end
 function WQ.SetConsumeOpacity(n) WriteOpacity("consumeOpacity", n)    end
 function WQ.GetRangeOpacity()    return ReadOpacity("rangeOpacity")   end
 function WQ.SetRangeOpacity(n)   WriteOpacity("rangeOpacity", n)      end
+function WQ.GetCurseOpacity()    return ReadOpacity("curseOpacity")   end
+function WQ.SetCurseOpacity(n)   WriteOpacity("curseOpacity", n)      end
 
 -- Debug dump (/run Warlock_Qol_Tbc.DebugDumpRange()): the current target's bracket PLUS every rung's
 -- result (in/out/— with the item ID that resolved it). Use it to spot a dead rung (all candidates "—",
@@ -2010,6 +2227,100 @@ function WQ.DebugDumpRange()
     end
 end
 
+-- ── Curse Tracker public API ──────────────────────────────────────────────────
+-- The curse table + order are exposed read-only so the UI can build its checkbox list.
+WQ.CURSES      = CURSES
+WQ.CURSE_ORDER = CURSE_ORDER
+
+function WQ.IsCursesActive() return CursesActive() end
+
+-- Enabled flag (per-profile, default OFF: this is a beta feature). Setter re-syncs the shared
+-- combat-log listener and the HUD.
+function WQ.IsCursesEnabled() local p = ActiveProfile(); return p and p.cursesEnabled or false end
+function WQ.SetCursesEnabled(on)
+    local p = ActiveProfile()
+    if p then p.cursesEnabled = on and true or false end
+    if not (p and p.cursesEnabled) then ClearAllCurses() end   -- turning off drops the store
+    UpdateCombatLogRegistration()
+    UpdateCursesRegistration()
+    if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
+end
+
+-- Per-profile "auto-show HUD" flags. BOTH default off (beta): opt in per context.
+function WQ.IsCurseShowRaid()  local p = ActiveProfile(); return p and p.curseShowRaid  or false end
+function WQ.SetCurseShowRaid(on)
+    local p = ActiveProfile(); if p then p.curseShowRaid = on and true or false end
+    if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
+end
+function WQ.IsCurseShowParty() local p = ActiveProfile(); return p and p.curseShowParty or false end
+function WQ.SetCurseShowParty(on)
+    local p = ActiveProfile(); if p then p.curseShowParty = on and true or false end
+    if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
+end
+
+-- Per-profile "hide when no curses are active" flag (default ON). Off = the HUD stays put showing a
+-- placeholder line, which is also how you find it to drag it somewhere.
+function WQ.IsCurseHideInactive() local p = ActiveProfile(); return p and p.curseHideInactive or false end
+function WQ.SetCurseHideInactive(on)
+    local p = ActiveProfile(); if p then p.curseHideInactive = on and true or false end
+    if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
+end
+
+-- Per-curse tracking flags (absent = tracked, only an explicit false disables).
+function WQ.IsCurseTracked(key) return IsCurseTracked(key) end
+function WQ.SetCurseTracked(key, on)
+    local p = ActiveProfile(); if not p or not CURSES[key] then return end
+    p.trackedCurses = p.trackedCurses or {}
+    p.trackedCurses[key] = on and true or false
+    -- Untracking can empty the list, so re-run visibility (it rebuilds the rows when still shown).
+    if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
+end
+
+-- Snapshot for the HUD: one entry per live curse, as
+--   { key, label, icon, caster, isMine, target, marker, remaining }
+-- sorted own-curses-first then soonest-to-drop, capped at CURSE_MAX_ROWS. Expired rows are pruned as
+-- we go, so this doubles as the read-side cleanup. Example:
+--   for _, c in ipairs(WQ.GetCurseSnapshot()) do print(c.caster, c.target, c.label, c.remaining) end
+function WQ.GetCurseSnapshot()
+    local now, rows = GetTime(), {}
+    for rowKey, e in pairs(curseState) do
+        local rem = e.expires - now
+        if rem <= 0 then
+            curseState[rowKey] = nil
+        elseif IsCurseTracked(e.curse) then
+            rows[#rows + 1] = {
+                key    = e.curse,  label  = CURSES[e.curse].label, icon   = CurseIcon(e.curse),
+                caster = e.caster, isMine = e.isMine,              target = e.target,
+                marker = e.marker, remaining = rem,
+            }
+        end
+    end
+    table.sort(rows, function(a, b)
+        if a.isMine ~= b.isMine then return a.isMine end          -- own curses pinned to the top
+        if a.remaining ~= b.remaining then return a.remaining < b.remaining end
+        if a.target ~= b.target then return a.target < b.target end
+        return a.key < b.key
+    end)
+    for i = #rows, CURSE_MAX_ROWS + 1, -1 do rows[i] = nil end
+    return rows
+end
+
+-- Debug dump (/run Warlock_Qol_Tbc.DebugDumpCurses()): feature state, the resolved spell names (a nil
+-- there means the name lookup failed and nothing will ever match), and every live row.
+function WQ.DebugDumpCurses()
+    print(("|cff9900ffWarlockQol|r Curses - active: %s, rows: %d"):format(
+        CursesActive() and "yes" or "no", #WQ.GetCurseSnapshot()))
+    for _, key in ipairs(CURSE_ORDER) do
+        print(("  %-12s %-28s tracked=%s"):format(
+            key, tostring(GetSpellNameByID(CURSES[key].baseId)), IsCurseTracked(key) and "yes" or "no"))
+    end
+    for _, c in ipairs(WQ.GetCurseSnapshot()) do
+        print(("    %s → %s: %s, %ds left%s%s"):format(
+            c.caster, c.target, c.label, math.floor(c.remaining),
+            c.marker and (" [mark " .. c.marker .. "]") or "", c.isMine and " (mine)" or ""))
+    end
+end
+
 -- ── Profile management API ────────────────────────────────────────────────────
 -- Called by the Profiles page. Each op refreshes the caches + re-syncs the combat-log listener
 -- when the bound profile or its flags may have changed.
@@ -2041,6 +2352,7 @@ function WQ.SwitchProfile(name)
     activeProfile = InitProfile(Warlock_Qol_Tbc_DB.profiles[name])
     EnsureProfileSeeded()
     UpdateCombatLogRegistration()   -- the new profile's announcer flags may differ
+    SyncCursesToProfile()
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- the new profile may pick a different accent colour
     if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- ...and a different backdrop opacity
     return true
@@ -2057,6 +2369,7 @@ function WQ.CreateProfile(name)
     activeProfile = Warlock_Qol_Tbc_DB.profiles[name]
     EnsureProfileSeeded()           -- seed the fresh profile's default lines
     UpdateCombatLogRegistration()
+    SyncCursesToProfile()
     return true
 end
 
@@ -2076,6 +2389,7 @@ function WQ.CopyProfileInto(sourceName)
     for k, v in pairs(src) do dst[k] = DeepCopy(v) end
     InitProfile(dst)                -- heal skeleton in case the source was partial
     UpdateCombatLogRegistration()   -- copied announcer flags may differ
+    SyncCursesToProfile()
     return true
 end
 
@@ -2114,6 +2428,7 @@ function WQ.HardReset()
     ResolveActiveBinding()                       -- recreate this char's default-seeded profile + binding
 
     UpdateCombatLogRegistration()                -- listener state reset with the fresh (all-ON) flags
+    SyncCursesToProfile()                        -- ...and the curse tracker back to its default (off)
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- back to the default accent colour
     if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- back to the default backdrop opacity
     print(("|cff9900ffWarlockQol|r: reset EVERYTHING to defaults (all profiles and settings) and removed %d macro(s)."):format(removed))
@@ -2272,7 +2587,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)
@@ -2330,6 +2645,18 @@ local function SanitizeProfile(raw)
         end
         if t then p.trackedConsumes = t end
     end
+    -- Per-curse tracking flags: whitelisted to CURSE_ORDER, only an explicit false (absent = tracked,
+    -- as with trackedCds), so a foreign string can't inject arbitrary keys.
+    if type(raw.trackedCurses) == "table" then
+        local t
+        for _, key in ipairs(CURSE_ORDER) do
+            if raw.trackedCurses[key] == false then
+                t = t or {}
+                t[key] = false
+            end
+        end
+        if t then p.trackedCurses = t end
+    end
     -- consumable expiry threshold (seconds) — only a sane number travels; InitProfile defaults it.
     if type(raw.consumeThreshold) == "number" and raw.consumeThreshold >= 5 and raw.consumeThreshold <= 3600 then
         p.consumeThreshold = math.floor(raw.consumeThreshold)
@@ -2342,7 +2669,7 @@ local function SanitizeProfile(raw)
     if type(raw.accent) == "string" and raw.accent:match("^%x%x%x%x%x%x$") then p.accent = raw.accent:lower() end
     -- Backdrop opacity (main window + the three HUDs) — only a sane percent travels each; InitProfile
     -- defaults them.
-    for _, field in ipairs({ "opacity", "trackerOpacity", "consumeOpacity", "rangeOpacity" }) do
+    for _, field in ipairs({ "opacity", "trackerOpacity", "consumeOpacity", "rangeOpacity", "curseOpacity" }) do
         local v = raw[field]
         if type(v) == "number" and v >= 0 and v <= 100 then p[field] = math.floor(v) end
     end

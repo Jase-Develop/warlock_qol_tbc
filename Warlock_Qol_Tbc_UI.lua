@@ -2266,6 +2266,119 @@ do
     rng.OnPageShow = WQ.SyncRangePage
 end
 
+-- ── Curse Tracker page (Beta) ──────────────────────────────────────────────────
+-- Settings-only page for the Curse HUD (a separate frame at the end of the file). Header toggle drives
+-- cursesEnabled. BETA, so every switch here defaults OFF: the feature stays invisible to anyone who
+-- hasn't gone looking for it. Body = HUD show controls + the tracked-curse list + opacity.
+do
+    local curse = NewPage("curses", "Curse Tracker",
+        "A HUD showing which curses your group's warlocks have out, on any mob, and how long each has left.",
+        { get = WQ.IsCursesEnabled, set = WQ.SetCursesEnabled })
+
+    local PAD_L, WRAP = 8, -16
+    -- Same checkbox column grid as the Consumables/Cooldowns pages so every page lines up (8 / 140 / 272).
+    local COL1, COL2, COL3 = PAD_L, 140, 272
+    local syncers = {}   -- widgets to re-sync from their getters on page show
+
+    local function CheckRow(label, y, get, set, x)
+        local cb = CreateFrame("CheckButton", nil, curse, "UICheckButtonTemplate,BackdropTemplate")
+        cb:SetSize(22, 22)
+        cb:SetPoint("TOPLEFT", curse, "TOPLEFT", x or PAD_L, y)
+        StyleCheckbox(cb)
+        cb:SetScript("OnClick", function(self)
+            set(self:GetChecked())
+            self.RefreshStateColor()
+        end)
+        local fs = curse:CreateFontString(nil, "OVERLAY")
+        ApplyFont(fs, "body")
+        fs:SetPoint("LEFT", cb, "RIGHT", 6, 0)
+        fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+        fs:SetText(label)
+        syncers[#syncers + 1] = function() cb:SetChecked(get() and true or false); cb.RefreshStateColor() end
+        return cb
+    end
+
+    local function Heading(text, y)
+        local h = curse:CreateFontString(nil, "OVERLAY")
+        ApplyFont(h, "heading")
+        AccentText(h)
+        h:SetPoint("TOPLEFT", curse, "TOPLEFT", PAD_L, y)
+        h:SetText(text)
+        return h
+    end
+    local function Caption(text, y)
+        local c = curse:CreateFontString(nil, "OVERLAY")
+        ApplyFont(c, "caption")
+        c:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+        c:SetPoint("TOPLEFT", curse, "TOPLEFT", PAD_L, y)
+        c:SetPoint("TOPRIGHT", curse, "TOPRIGHT", WRAP, y)
+        c:SetJustifyH("LEFT")
+        c:SetText(text)
+        return c
+    end
+    local function Rule(y)
+        local r = curse:CreateTexture(nil, "ARTWORK")
+        r:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
+        r:SetPoint("TOPLEFT",  curse, "TOPLEFT",  PAD_L, y)
+        r:SetPoint("TOPRIGHT", curse, "TOPRIGHT", WRAP,  y)
+        r:SetHeight(1)
+    end
+
+    Heading("HUD", -6)
+    Caption("Each row reads: who cast it, the target (with its raid marker), the curse, and the time " ..
+            "left. Your own curses sort to the top, then whichever is closest to dropping.", -26)
+    CheckRow("Show HUD", -66,
+        function() return WQ.IsCurseHUDOpen() end, function(v) WQ.SetCurseHUDOpen(v) end)
+    CheckRow("Auto-show in raid", -66,
+        function() return WQ.IsCurseShowRaid() end,
+        function(v)
+            WQ.SetCurseShowRaid(v)
+            -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
+            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetCurseHUDOpen(true) end
+        end, COL2)
+    CheckRow("Auto-show in party", -66,
+        function() return WQ.IsCurseShowParty() end,
+        function(v)
+            WQ.SetCurseShowParty(v)
+            -- Enabling while already in a party dungeon won't hit a transition, so open the HUD now.
+            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetCurseHUDOpen(true) end
+        end, COL3)
+    CheckRow("Hide when no curses are active", -92,
+        function() return WQ.IsCurseHideInactive() end, function(v) WQ.SetCurseHideInactive(v) end)
+
+    Rule(-124)
+
+    -- Tracked curses: one checkbox per curse (data-driven from CURSE_ORDER), two per row like the
+    -- Consumables page. All default ON: the feature's own toggle is what keeps it out of the way.
+    Heading("Tracked Curses", -140)
+    local y = -164
+    for i, key in ipairs(WQ.CURSE_ORDER or {}) do
+        local spec  = WQ.CURSES and WQ.CURSES[key]
+        local label = spec and spec.label or key
+        CheckRow(label, y,
+            function() return WQ.IsCurseTracked(key) end,
+            function(v) WQ.SetCurseTracked(key, v) end,
+            (i % 2 == 1) and COL1 or COL2)   -- odd = left column, even = right
+        if i % 2 == 0 then y = y - 28 end    -- drop to the next row after each pair
+    end
+    if #(WQ.CURSE_ORDER or {}) % 2 == 1 then y = y - 28 end   -- clear a half-filled final row
+
+    -- Appearance: this HUD's backdrop opacity (independent of the main window and the other HUDs).
+    Rule(y - 8)
+    Heading("Appearance", y - 24)
+    syncers[#syncers + 1] = MakeOpacityRow(curse, PAD_L, y - 50, WQ.GetCurseOpacity, WQ.SetCurseOpacity)
+
+    Rule(y - 82)
+    Caption("Only curses cast by warlocks in your own party or raid are shown. Timers come from the " ..
+            "combat log, so a curse applied while you were out of range appears when it is refreshed. " ..
+            "Drag the HUD to reposition it, and use the padlock to pin it.", y - 98)
+
+    function WQ.SyncCursesPage()
+        for _, sync in ipairs(syncers) do sync() end
+    end
+    curse.OnPageShow = WQ.SyncCursesPage
+end
+
 -- ── Settings page (Settings) ───────────────────────────────────────────────────
 -- Cross-cutting look-and-feel options, saved to the active profile: accent colour and the main
 -- window's backdrop opacity. (The UI font is fixed to Arial Narrow: the picker was removed.) Also
@@ -2487,6 +2600,8 @@ do
         { label = "Cooldowns",              page = "tracking"     },
         { label = "Consumables",            page = "consumables"  },
         { label = "Range Indicator",        page = "range"        },
+        { header = "BETA" },
+        { label = "Curses",                 page = "curses"       },
         { header = "SETTINGS" },
         { label = "Settings",               page = "settings"  },
         { label = "Profiles",               page = "profiles"  },
@@ -3518,6 +3633,345 @@ do
         WQ.ApplyRangeTransparency()   -- also applies the font + layout
         WQ.UpdateRangeRegistration()
         Evaluate()
+    end
+end
+
+-- ── Curse Tracker HUD (Beta) ────────────────────────────────────────────────────
+-- Standalone movable list of the curses your group's warlocks currently have out, fed entirely by the
+-- core's combat-log store (WQ.GetCurseSnapshot). Row = [caster] [raid marker] [target] [curse] [timer].
+-- Structure vs. ticking are split as on the cooldown HUD: rows are rebuilt on curse events only, while
+-- the OnUpdate does arithmetic on each visible row's stored expiry. A row hitting zero triggers one
+-- rebuild, which is also what lets the frame hide itself once the last curse drops.
+do
+    -- Width is deliberately tight: only the target column flexes, and both name columns truncate rather
+    -- than wrap, so the frame can be narrowed further by dropping HUD_W alone. The fixed columns below
+    -- are sized to their worst realistic content (a 12-char name, "4:59", a 16px icon slot).
+    local HUD_W        = 248
+    local HUD_ROW_H    = 20
+    local HUD_HEADER_H = 20
+    local HUD_PAD      = 6
+    local HUD_BODY_TOP = HUD_PAD + HUD_HEADER_H + 4   -- y-offset of the first row below the header
+    local CASTER_W     = 64                           -- fixed caster column, so the targets line up
+    local MARKER_W     = 13                           -- raid-marker column: reserved even when empty
+    local ICON_W       = 14
+    local TIMER_W      = 36
+    local COL_GAP      = 3                            -- spacing between every column
+    local LOW_TIME     = 10                           -- seconds; below this the timer turns red
+
+    -- mm:ss for a minute+, else "Ns". Only called with remaining > 0.
+    local function FormatTime(sec)
+        sec = math.floor(sec + 0.5)
+        if sec >= 60 then return ("%d:%02d"):format(math.floor(sec / 60), sec % 60) end
+        return sec .. "s"
+    end
+
+    local hud = CreateFrame("Frame", "Warlock_Qol_Tbc_CurseHUD", UIParent, "BackdropTemplate")
+    hud:SetSize(HUD_W, HUD_BODY_TOP + HUD_ROW_H + HUD_PAD)
+    hud:SetPoint("CENTER", UIParent, "CENTER", 320, -80)   -- default; user drags, then persisted
+    hud:SetFrameStrata("MEDIUM")
+    hud:SetClampedToScreen(true)
+    ApplyFlat(hud, THEME.bg, true)
+    RegisterFill(hud, THEME.bg, WQ.GetCurseOpacity)   -- own opacity value (Curses page); border solid
+    hud:Hide()
+
+    -- Header strip: title (also the visual grip). No mouse, so drags fall through to the hud frame.
+    local hudHeader = CreateFrame("Frame", nil, hud, "BackdropTemplate")
+    hudHeader:SetPoint("TOPLEFT",  hud, "TOPLEFT",   HUD_PAD, -HUD_PAD)
+    hudHeader:SetPoint("TOPRIGHT", hud, "TOPRIGHT", -HUD_PAD, -HUD_PAD)
+    hudHeader:SetHeight(HUD_HEADER_H)
+    ApplyFlat(hudHeader, THEME.panel, true)
+
+    local hudTitle = hudHeader:CreateFontString(nil, "OVERLAY")
+    ApplyFont(hudTitle, "caption")
+    hudTitle:SetPoint("LEFT", hudHeader, "LEFT", 6, 0)
+    AccentText(hudTitle)
+    hudTitle:SetText("Curses")
+
+    -- Persistence (position + shown + locked): a top-level DB table like `ui`.
+    local function HUDdb()
+        local db = Warlock_Qol_Tbc_DB
+        if not db then return nil end
+        db.curseHUD = db.curseHUD or {}
+        return db.curseHUD
+    end
+    local function SaveHUDPlacement()
+        local d = HUDdb(); if not d then return end
+        local point, _, relPoint, x, y = hud:GetPoint()
+        d.point, d.relPoint, d.x, d.y = point, relPoint, x, y
+    end
+    local function RestoreHUDPlacement()
+        local d = HUDdb(); if not d or not d.point then return end
+        hud:ClearAllPoints()
+        hud:SetPoint(d.point, UIParent, d.relPoint, d.x, d.y)
+    end
+
+    -- Whole frame draggable (unless locked); saves position on release. Rows are mouse-transparent, so
+    -- a drag anywhere on the HUD lands here.
+    hud:SetMovable(true)
+    hud:EnableMouse(true)
+    hud:RegisterForDrag("LeftButton")
+    hud:SetScript("OnDragStart", function()
+        local d = HUDdb()
+        if not (d and d.locked) then hud:StartMoving() end
+    end)
+    hud:SetScript("OnDragStop", function() hud:StopMovingOrSizing(); SaveHUDPlacement() end)
+
+    -- Close button at the header's far right (same as the cooldown HUD's): unticks "Show HUD".
+    local closeBtn = CreateFrame("Button", nil, hudHeader, "BackdropTemplate")
+    closeBtn:SetSize(16, 16)
+    closeBtn:SetPoint("RIGHT", hudHeader, "RIGHT", -3, 0)
+    ApplyFlat(closeBtn, THEME.field, true)
+    local closeX = closeBtn:CreateFontString(nil, "OVERLAY")
+    ApplyFont(closeX, "body")
+    closeX:SetPoint("CENTER")
+    closeX:SetText("X")
+    AccentText(closeX)
+    closeBtn:SetScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+        closeX:SetTextColor(0.78, 0.78, 1.0)
+    end)
+    closeBtn:SetScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
+        closeX:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+    end)
+    closeBtn:SetScript("OnClick", function() if WQ.DismissCursesHUD then WQ.DismissCursesHUD() end end)
+
+    -- Padlock toggle left of the close button, as on the cooldown HUD (accent = locked, dim = unlocked).
+    local lockBtn = CreateFrame("Button", nil, hudHeader, "BackdropTemplate")
+    lockBtn:SetSize(16, 16)
+    lockBtn:SetPoint("RIGHT", closeBtn, "LEFT", -3, 0)
+    ApplyFlat(lockBtn, THEME.field, true)
+    local lockTex = lockBtn:CreateTexture(nil, "ARTWORK")
+    lockTex:SetPoint("TOPLEFT",     lockBtn, "TOPLEFT",      2, -2)
+    lockTex:SetPoint("BOTTOMRIGHT", lockBtn, "BOTTOMRIGHT", -2,  2)
+    if lockTex.SetDesaturated then lockTex:SetDesaturated(true) end
+    local function RefreshLockIcon()
+        local locked = HUDdb() and HUDdb().locked
+        lockTex:SetTexture(locked and "Interface\\Buttons\\LockButton-Locked-Up"
+                                   or "Interface\\Buttons\\LockButton-Unlocked-Up")
+        local c = locked and THEME.accent or THEME.textDim
+        lockTex:SetVertexColor(c[1], c[2], c[3])
+    end
+    RegisterAccent(function()
+        RefreshLockIcon()
+        if WQ.RefreshCursesHUD then WQ.RefreshCursesHUD() end   -- own-caster rows are accent-tinted
+    end)
+    lockBtn:SetScript("OnClick", function()
+        local d = HUDdb()
+        WQ.SetCurseHUDLocked(not (d and d.locked))   -- setter repaints the icon
+    end)
+    lockBtn:SetScript("OnEnter", function(self)
+        self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText((HUDdb() and HUDdb().locked) and "Unlock HUD position" or "Lock HUD position",
+            THEME.accent[1], THEME.accent[2], THEME.accent[3])
+        GameTooltip:Show()
+    end)
+    lockBtn:SetScript("OnLeave", function(self)
+        self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
+        GameTooltip:Hide()
+    end)
+
+    -- One row: [caster] [marker] [target] [curse icon] [timer]. Plain frames with no mouse, so a drag
+    -- anywhere on the HUD moves the whole thing. The marker column is always reserved (texture cleared
+    -- when the mob is unmarked) so the target names stay aligned down the list.
+    local function MakeRow()
+        local row = CreateFrame("Frame", nil, hud)
+        row:SetHeight(HUD_ROW_H)
+
+        local caster = row:CreateFontString(nil, "OVERLAY")
+        ApplyFont(caster, "caption")
+        caster:SetPoint("LEFT", row, "LEFT", 2, 0)
+        caster:SetWidth(CASTER_W)
+        caster:SetJustifyH("LEFT")
+        caster:SetWordWrap(false)
+        row.caster = caster
+
+        local marker = row:CreateTexture(nil, "ARTWORK")
+        marker:SetSize(MARKER_W, MARKER_W)
+        marker:SetPoint("LEFT", caster, "RIGHT", COL_GAP, 0)
+        row.marker = marker
+
+        local timer = row:CreateFontString(nil, "OVERLAY")
+        ApplyFont(timer, "caption")
+        timer:SetPoint("RIGHT", row, "RIGHT", -2, 0)
+        timer:SetWidth(TIMER_W)
+        timer:SetJustifyH("RIGHT")
+        row.timer = timer
+
+        local icon = row:CreateTexture(nil, "ARTWORK")
+        icon:SetSize(ICON_W, ICON_W)
+        icon:SetPoint("RIGHT", timer, "LEFT", -COL_GAP, 0)
+        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)   -- trim the default icon border
+        row.icon = icon
+
+        local target = row:CreateFontString(nil, "OVERLAY")
+        ApplyFont(target, "caption")
+        target:SetPoint("LEFT",  marker, "RIGHT", COL_GAP,  0)
+        target:SetPoint("RIGHT", icon,   "LEFT", -COL_GAP, 0)   -- clip so a long name can't overrun the icon
+        target:SetJustifyH("LEFT")
+        target:SetWordWrap(false)
+        row.target = target
+
+        return row
+    end
+
+    local hudRows   = {}   -- row-frame pool
+    local hudActive = {}   -- rows currently shown: { row, expires }
+
+    -- Shown when the HUD is open but nothing is cursed (only reachable with "Hide when no curses are
+    -- active" off, which is how you find the frame to drag it).
+    local hudEmpty = hud:CreateFontString(nil, "OVERLAY")
+    ApplyFontItalic(hudEmpty, "small")
+    hudEmpty:SetPoint("TOP", hudHeader, "BOTTOM", 0, -8)
+    hudEmpty:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+    hudEmpty:SetText("No curses active")
+    hudEmpty:Hide()
+
+    -- Repaint the countdowns from each row's stored expiry. Returns true if any row has run out, which
+    -- means the structure is stale and the caller should rebuild (and possibly hide).
+    local function UpdateTimers()
+        local now, expired = GetTime(), false
+        for _, a in ipairs(hudActive) do
+            local rem = a.expires - now
+            if rem <= 0 then
+                expired = true
+            else
+                a.row.timer:SetText(FormatTime(rem))
+                if rem <= LOW_TIME then
+                    a.row.timer:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])
+                else
+                    a.row.timer:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+                end
+            end
+        end
+        return expired
+    end
+
+    -- Rebuild the rows from the core's snapshot (already sorted own-first then soonest-to-drop, and
+    -- capped). Called on curse events, not per tick.
+    function WQ.RefreshCursesHUD()
+        if not hud:IsShown() then return end
+        local snap = (WQ.GetCurseSnapshot and WQ.GetCurseSnapshot()) or {}
+        wipe(hudActive)
+
+        local now = GetTime()
+        local y, shown = -HUD_BODY_TOP, 0
+        for _, c in ipairs(snap) do
+            shown = shown + 1
+            local row = hudRows[shown] or MakeRow()
+            hudRows[shown] = row
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT",  hud, "TOPLEFT",   HUD_PAD, y)
+            row:SetPoint("TOPRIGHT", hud, "TOPRIGHT", -HUD_PAD, y)
+
+            row.caster:SetText(c.caster)
+            -- Own curses tinted accent, so you can pick your own out of a busy list at a glance.
+            if c.isMine then
+                row.caster:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+            else
+                row.caster:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+            end
+            if c.marker then
+                row.marker:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcon_" .. c.marker)
+            else
+                row.marker:SetTexture(nil)   -- column stays reserved so the names still line up
+            end
+            row.target:SetText(c.target)
+            row.target:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+            row.icon:SetTexture(c.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+            row:Show()
+
+            hudActive[shown] = { row = row, expires = now + c.remaining }
+            y = y - HUD_ROW_H
+        end
+        for i = shown + 1, #hudRows do hudRows[i]:Hide() end
+
+        if shown == 0 then
+            hudEmpty:Show()
+            y = y - HUD_ROW_H       -- reserve the empty-message line
+        else
+            hudEmpty:Hide()
+        end
+
+        hud:SetHeight(-y + HUD_PAD)   -- content bottom (-y) plus bottom padding
+        UpdateTimers()                -- paint immediately; don't wait for the next tick
+    end
+
+    local ApplyHUDVisibility   -- forward decl (the tick calls it when a row runs out)
+
+    -- Live tick: cheap arithmetic over at most CURSE_MAX_ROWS rows. A row reaching zero re-evaluates
+    -- visibility, which rebuilds and hides the frame when that was the last curse.
+    local acc = 0
+    hud:SetScript("OnUpdate", function(_, elapsed)
+        acc = acc + elapsed
+        if acc < 0.25 then return end
+        acc = 0
+        if UpdateTimers() then ApplyHUDVisibility() end
+    end)
+
+    -- Visibility = the persisted curseHUD.open flag (driven by "Show HUD", the X, and each auto-show
+    -- transition) AND, when "Hide when no curses are active" is on, at least one live row. Both
+    -- auto-show toggles default OFF here: this is a beta feature, so nothing appears unasked.
+    local function InRaidInstance()  return IsInRaid() and select(2, IsInInstance()) == "raid" end
+    local function InPartyInstance() return IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" end
+    local wasInRaid, wasInParty = false, false
+
+    ApplyHUDVisibility = function()
+        local d = HUDdb()
+        if not d then hud:Hide(); return end
+        local nowRaid = InRaidInstance()
+        if nowRaid ~= wasInRaid then
+            if WQ.IsCurseShowRaid() then d.open = nowRaid and true or false end
+            wasInRaid = nowRaid
+        end
+        local nowParty = InPartyInstance()
+        if nowParty ~= wasInParty then
+            if WQ.IsCurseShowParty() then d.open = nowParty and true or false end
+            wasInParty = nowParty
+        end
+
+        local want = WQ.IsMasterEnabled() and WQ.IsCursesEnabled() and d.open and true or false
+        -- Data gate, separate from `open` so "Show HUD" and the X stay authoritative either way.
+        if want and WQ.IsCurseHideInactive() then
+            local snap = WQ.GetCurseSnapshot and WQ.GetCurseSnapshot()
+            want = (snap and #snap > 0) and true or false
+        end
+
+        if want then
+            local wasShown = hud:IsShown()
+            hud:Show()
+            if not wasShown then acc = 0 end   -- fresh tick window on the way in
+            WQ.RefreshCursesHUD()
+        else
+            hud:Hide()
+        end
+        -- Keep the Curses page's checkboxes in step (the X button and auto-show both move `open`).
+        -- Only worth doing while the config window is actually up: this runs on curse events.
+        if WQ.SyncCursesPage and f:IsShown() then WQ.SyncCursesPage() end
+    end
+    WQ.UpdateCursesHUDVisibility = ApplyHUDVisibility
+
+    -- Manual open/close: the "Show HUD" toggle, the HUD's X button, and /run ToggleCursesHUD().
+    function WQ.IsCurseHUDOpen() local d = HUDdb(); return d and d.open or false end
+    function WQ.SetCurseHUDOpen(on)
+        local d = HUDdb(); if d then d.open = on and true or false end
+        ApplyHUDVisibility()   -- re-syncs the page's checkboxes itself when the window is up
+    end
+    function WQ.ToggleCursesHUD() WQ.SetCurseHUDOpen(not WQ.IsCurseHUDOpen()) end
+    function WQ.DismissCursesHUD() WQ.SetCurseHUDOpen(false) end   -- the HUD's X button
+
+    function WQ.IsCurseHUDLocked() local d = HUDdb(); return d and d.locked or false end
+    function WQ.SetCurseHUDLocked(on)
+        local d = HUDdb(); if d then d.locked = on and true or false end
+        RefreshLockIcon()
+    end
+
+    -- Called from PLAYER_LOGIN (DB ready): restore position + lock icon, then apply visibility.
+    function WQ.InitCursesHUD()
+        RestoreHUDPlacement()
+        RefreshLockIcon()
+        ApplyHUDVisibility()
     end
 end
 

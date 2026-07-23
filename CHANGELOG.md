@@ -2,6 +2,20 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.25] - 2026-07-23
+
+#### Added
+- **Curse Tracker (Beta)** - a new HUD listing the curses your group's warlocks currently have out, in
+  a new **Beta** menu section. Each row shows who cast it, the target (with its raid marker), which
+  curse, and the time remaining, turning red in the last 10 seconds. It tracks every cursed mob, not
+  just your current target, and your own curses sort to the top, followed by whichever is closest to
+  dropping. Curse of the Elements, Recklessness, Weakness and Tongues are each tracked with their own
+  toggle.
+- Because it is a beta feature, **everything about it is off until you turn it on**: the feature
+  itself, Show HUD, and both auto-show options all default to off. Nothing changes for anyone who does
+  not go looking for it. The HUD also hides itself whenever no curses are active (optional), and it has
+  a padlock and its own opacity setting like the other HUDs.
+
 ### [0.24] - 2026-07-20
 
 #### Fixed
