@@ -18,3 +18,6 @@ graphify-out/
 # Local-only AI project instructions (must not be published to the repo or shipped in releases)
 CLAUDE.md
 .claude/
+
+# Local-only session handover notes (working doc, not shipped)
+handover.md
