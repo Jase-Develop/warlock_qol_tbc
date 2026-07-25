@@ -12,9 +12,12 @@ one-click macros the addon generates for you. WarlockQol is **dependency-free**.
 - **Ritual of Souls** - a plain line said in `/say` when cast.
 - **Soulstone Announcement** - auto-announces to party/raid when a soulstone is cast in your group.
 - **Banish Announcement** - announces your own banishes (separate landed & resisted pools, automatic rank suffix).
-- **Raid Cooldown Tracker** - a movable HUD showing each raid warlock's tracked cooldown (Ready / live countdown).
+- **Cooldown Tracker** - a movable HUD showing each party/raid warlock's tracked cooldown (Ready / live countdown).
 - **Missing Consumables** - a movable HUD flagging missing or soon-to-expire raid consumables.
 - **Range Indicator** - a movable text HUD showing your current target's name and your distance to it as a yard range.
+- **Curse Tracker** *(beta)* - a movable HUD listing the curses your group's warlocks have out on any mob:
+  who cast it, the target and its raid marker, which curse, and the time remaining. Off by default; turn it
+  on under the **Beta** section.
 - **Profiles** - per-character config profiles, with copy and share-by-string export/import.
 
 Chat lines support WoW raid target markers (`{star}`, `{skull}`, …) via a quick-insert row.
