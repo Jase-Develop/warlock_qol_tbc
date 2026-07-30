@@ -2,6 +2,27 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.26] - 2026-07-30
+
+#### Added
+- **Loss of Control (Beta)** - announces to your party/raid when you lose control of your character, so
+  they know you are not driving and can dispel you, drop a Tremor Totem or break the mind control. Fear,
+  charm and mind control are covered, each with its own toggle, plus independent Party and Raid toggles
+  like the Soulstone and Banish announcers. **Raid announcing starts switched off**: on a mechanic that
+  fears the whole raid it would be noise, so it is opt-in until a future version can roll simultaneous
+  alerts into a single message.
+- Detection needs **no spell list**, so nothing needs updating as you meet new bosses. The flip side is
+  that stuns and silences are not covered: they leave you in control of the character, so the game
+  reports nothing to detect.
+- **Only while in combat** (on by default) filters out the harmless cases the game reports the same way,
+  most obviously flight paths. There is also an optional local chat echo, on by default, which is what
+  you see when playing solo.
+- Like every beta feature, **the whole thing is off until you turn it on**, under the **Beta** section.
+
+#### Changed
+- The addon's CurseForge description now lists the Range Indicator and Curse Tracker, which it had been
+  missing.
+
 ### [0.25] - 2026-07-23
 
 #### Added

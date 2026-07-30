@@ -33,6 +33,14 @@ local SOULSTONE_SPELL_NAME = "Soulstone Resurrection"
 local SOULSTONE_THROTTLE   = 3   -- seconds; block a duplicate announce for the same target
 local DEFAULT_SOULSTONE_LINE = "A {circle} soulstone {circle} has been cast on {targetName}"
 
+-- Loss of Control (BETA) announce messages. Deliberately NOT user-editable line pools: there are
+-- exactly two, they need to be short enough to read at a glance while you are not driving, and the
+-- feature has no placeholders to fill. {skull} is a raid marker token, sent as plain text and
+-- rendered as an icon by each receiving client (same as the pet /say lines).
+local CONTROL_MSG_FEAR   = "{skull} Feared! {skull}"
+local CONTROL_MSG_CHARM  = "{skull} Mind controlled! {skull}"
+local CONTROL_THROTTLE   = 3   -- seconds; block a dup announce per kind if PLAYER_CONTROL_GAINED never lands
+
 -- True if a combat-log unit's affiliation is mine/party/raid (ignore nearby strangers).
 local AFFILIATION_GROUP = bit.bor(
     COMBATLOG_OBJECT_AFFILIATION_MINE  or 0x1,
@@ -180,6 +188,22 @@ local function InitProfile(p)
     if p.curseShowParty    == nil then p.curseShowParty    = false end
     if p.curseHideInactive == nil then p.curseHideInactive = true  end
     if not p.trackedCurses then p.trackedCurses = {} end
+    -- Loss of Control (BETA): same rule, the feature itself defaults OFF. Inside it both effect kinds
+    -- default on and controlCombatOnly filters out taxi flights and other harmless control loss.
+    -- controlEcho prints the line to your own chat frame, so enabling the feature always does something
+    -- visible even with no announce channel live.
+    -- DELIBERATE DIVERGENCE from the soulstone/banish pair (which both default on): controlRaidEnabled
+    -- defaults **OFF**. A raid is exactly where this spams: on a mass-fear mechanic every addon user
+    -- announces their own control loss at once, and the messages are obsolete before anyone reads them.
+    -- Raid is opt-in until the comms-aggregated version lands (see the 0.27 note in CLAUDE.md). Party
+    -- (a 5-man) stays on: at most a few people, and the announce is genuinely actionable there.
+    if p.controlEnabled      == nil then p.controlEnabled      = false end
+    if p.controlFear         == nil then p.controlFear         = true  end
+    if p.controlCharm        == nil then p.controlCharm        = true  end
+    if p.controlPartyEnabled == nil then p.controlPartyEnabled = true  end
+    if p.controlRaidEnabled  == nil then p.controlRaidEnabled  = false end
+    if p.controlCombatOnly   == nil then p.controlCombatOnly   = true  end
+    if p.controlEcho         == nil then p.controlEcho         = true  end
     -- Settings: accent colour (6-hex; default = Warlock purple).
     if p.accent == nil then p.accent = WQ.DEFAULT_ACCENT end
     -- Backdrop opacity (whole percent, default 80): one for the main window (Settings page) plus one
@@ -613,6 +637,89 @@ local function SaySouls()
     if line ~= "" then
         SendChatMessage(line, "SAY")
     end
+end
+
+-- ── Loss of Control announcer (BETA) ─────────────────────────────────────────
+-- PLAYER_CONTROL_LOST is the entire detection: a vanilla-era event that fires whenever the player
+-- cannot drive their own character (fear, charm, mind control, and taxi flights). It carries NO
+-- payload, which is exactly why it is used: there is no curated CC spell-ID list to maintain, unlike
+-- every comparable addon. The cost is that it cannot name the effect, so the kind is resolved from
+-- UnitIsCharmed at announce time, and stuns/silences are out of scope (they leave you in control of
+-- the character, so they never fire this event).
+
+-- Channel for the announce. This started as "SAY", which is what the feature was asked for, and the
+-- 2.5.6 client was tested directly (2026-07-30): an identical SendChatMessage(..., "SAY") appears when
+-- run from a /run (a hardware event) and is SILENTLY DROPPED from a C_Timer callback, with no Lua error.
+-- So the hardware-event restriction on addon /say is real on this client, confirming what the pet and
+-- ritual macros already implied, and an event-driven announcer cannot use /say at all. Party/raid is not
+-- restricted (it is how the soulstone announcer works), so this is group-only now: nil when solo.
+local function ControlChannel()
+    return GroupAnnounceChannel("control")
+end
+
+-- "charm" when something else is driving (charm / mind control / possession), else "fear".
+-- Existence-guarded like the other version shims: on a client without UnitIsCharmed every control
+-- loss reads as a fear, which is much the more common case.
+local function ControlKind()
+    if UnitIsCharmed and UnitIsCharmed("player") then return "charm" end
+    return "fear"
+end
+
+-- Announce one loss of control. `kind` is "fear" or "charm" (from ControlKind).
+local controlRecent = {}   -- kind -> GetTime() of the last announce
+local function SayControlLost(kind)
+    if not FeatureOn("controlEnabled") then return end
+    local p = ActiveProfile()
+    if not p then return end
+
+    -- Per-kind opt-out.
+    if kind == "charm" then
+        if not p.controlCharm then return end
+    elseif not p.controlFear then
+        return
+    end
+
+    -- nil = solo, or that context's toggle is off. Not a bail on its own: the local echo is still
+    -- worth printing when there is nobody to announce to.
+    local channel = ControlChannel()
+    if not channel and not p.controlEcho then return end
+
+    -- Secondary safety only: the caller's transition latch is what normally stops a repeat.
+    local now  = GetTime()
+    local last = controlRecent[kind]
+    if last and (now - last) < CONTROL_THROTTLE then return end
+    controlRecent[kind] = now
+
+    local msg = (kind == "charm") and CONTROL_MSG_CHARM or CONTROL_MSG_FEAR
+    if channel then SendChatMessage(msg, channel) end
+
+    -- Local echo of exactly what was sent (or would have been, when solo). Marker tokens are not
+    -- icon-substituted in a print, so this shows the raw token text.
+    if p.controlEcho then
+        print(("|cff9900ffWarlockQol|r %s"):format(msg))
+    end
+end
+
+-- Transition latch. PLAYER_CONTROL_LOST can fire several times for one effect (chain fears; a
+-- druid's form changes fire it repeatedly), so only the EDGE into loss-of-control announces.
+-- Clearing this is the only reason PLAYER_CONTROL_GAINED is handled: it is never announced.
+local controlLost = false
+
+local function OnControlLost()
+    if controlLost then return end
+    controlLost = true
+    if not FeatureOn("controlEnabled") then return end
+    -- Taxi flights fire this event too and are never worth saying out loud.
+    if UnitOnTaxi and UnitOnTaxi("player") then return end
+    local p = ActiveProfile()
+    -- Anything that fears or charms you has already put you in combat, so this filter costs no real
+    -- detections while removing the remaining harmless cases (a flight path, a shapeshift).
+    if p and p.controlCombatOnly and not UnitAffectingCombat("player") then return end
+    SayControlLost(ControlKind())
+end
+
+local function OnControlGained()
+    controlLost = false
 end
 
 -- ── Public say + macro helpers ──────────────────────────────────────────────────
@@ -1447,6 +1554,7 @@ local eventFrame = CreateFrame("Frame")
 local UpdateCombatLogRegistration   -- shared combat-log listener (soulstone + banish + tracker + curses)
 local UpdateTrackerRegistration     -- Raid CD Tracker listeners (comms + roster)
 local UpdateCursesRegistration      -- Curse Tracker listeners (zone change, for auto-show)
+local UpdateControlRegistration     -- Loss of Control listeners (PLAYER_CONTROL_LOST/GAINED)
 
 eventFrame:RegisterEvent("ADDON_LOADED")           -- an addon finished loading
 eventFrame:RegisterEvent("PLAYER_LOGIN")           -- UI (incl. chat) ready
@@ -1514,6 +1622,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
         -- Curse Tracker: no listeners of its own beyond the shared combat log + the zone-change event.
         UpdateCursesRegistration()
+
+        -- Loss of Control: its own two events, nothing shared.
+        UpdateControlRegistration()
 
         -- Restore the standalone HUDs (defined in the UI file) + position the minimap button.
         if WQ.InitTrackerHUD then WQ.InitTrackerHUD() end
@@ -1613,6 +1724,14 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         ClearAllCurses()
         if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
 
+    elseif event == "PLAYER_CONTROL_LOST" then
+        -- No payload: this event only says "you are not driving any more". OnControlLost does the
+        -- filtering (taxi, combat) and resolves fear vs charm.
+        OnControlLost()
+
+    elseif event == "PLAYER_CONTROL_GAINED" then
+        OnControlGained()
+
     elseif event == "PLAYER_REGEN_ENABLED" then
         -- Left combat: whatever we were fighting is now dead, despawned, evaded or reset, so any curse
         -- still in the store is stale. Clears leftovers a missed UNIT_DIED would otherwise strand (a
@@ -1667,6 +1786,23 @@ UpdateCursesRegistration = function()
         eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
     else
         eventFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
+    end
+end
+
+-- The Loss of Control announcer owns PLAYER_CONTROL_LOST/GAINED outright: nothing else in the addon
+-- listens for them, so unlike the shared PLAYER_ENTERING_WORLD (see UpdateWorldRegistration) a plain
+-- register/unregister pair is safe here. Turning the feature on also clears the transition latch, so a
+-- latch stranded by a missed PLAYER_CONTROL_GAINED can be cleared without a /reload.
+local function ControlActive() return FeatureOn("controlEnabled") end
+
+UpdateControlRegistration = function()
+    if ControlActive() then
+        controlLost = false
+        eventFrame:RegisterEvent("PLAYER_CONTROL_LOST")
+        eventFrame:RegisterEvent("PLAYER_CONTROL_GAINED")
+    else
+        eventFrame:UnregisterEvent("PLAYER_CONTROL_LOST")
+        eventFrame:UnregisterEvent("PLAYER_CONTROL_GAINED")
     end
 end
 
@@ -1756,6 +1892,7 @@ function WQ.SetMasterEnabled(on)
     if WQ.UpdateRangeHUDVisibility       then WQ.UpdateRangeHUDVisibility()       end
     UpdateCursesRegistration()
     if WQ.UpdateCursesHUDVisibility      then WQ.UpdateCursesHUDVisibility()      end
+    UpdateControlRegistration()
 end
 
 -- ── Raid CD Tracker public API ────────────────────────────────────────────────
@@ -2402,6 +2539,97 @@ function WQ.DebugDumpCurses()
     end
 end
 
+-- ── Loss of Control public API (BETA) ─────────────────────────────────────────
+
+function WQ.IsControlActive() return ControlActive() end
+
+-- Enabled flag (per-profile, default OFF: beta). Setter re-syncs the two listeners.
+function WQ.IsControlEnabled() local p = ActiveProfile(); return p and p.controlEnabled or false end
+function WQ.SetControlEnabled(on)
+    local p = ActiveProfile()
+    if p then p.controlEnabled = on and true or false end
+    UpdateControlRegistration()
+end
+
+-- Per-kind announce flags (both default on) and the two behaviour flags. No event and no HUD, so
+-- these setters just persist: SayControlLost / OnControlLost read them on fire.
+function WQ.IsControlFear()  local p = ActiveProfile(); return p and p.controlFear  or false end
+function WQ.SetControlFear(on)  local p = ActiveProfile(); if p then p.controlFear  = on and true or false end end
+
+function WQ.IsControlCharm() local p = ActiveProfile(); return p and p.controlCharm or false end
+function WQ.SetControlCharm(on) local p = ActiveProfile(); if p then p.controlCharm = on and true or false end end
+
+function WQ.IsControlCombatOnly() local p = ActiveProfile(); return p and p.controlCombatOnly or false end
+function WQ.SetControlCombatOnly(on) local p = ActiveProfile(); if p then p.controlCombatOnly = on and true or false end end
+
+function WQ.IsControlEcho() local p = ActiveProfile(); return p and p.controlEcho or false end
+function WQ.SetControlEcho(on) local p = ActiveProfile(); if p then p.controlEcho = on and true or false end end
+
+-- Per-context party/raid announce toggles, read by GroupAnnounceChannel("control"). Same contract as
+-- the soulstone/banish pairs: default ON, nil/absent counts as on, and the setters just persist (the
+-- two PLAYER_CONTROL_* listeners stay keyed off controlEnabled alone).
+function WQ.IsControlPartyEnabled()
+    local p = ActiveProfile(); return p ~= nil and p.controlPartyEnabled ~= false
+end
+function WQ.SetControlPartyEnabled(on)
+    local p = ActiveProfile(); if p then p.controlPartyEnabled = on and true or false end
+end
+function WQ.IsControlRaidEnabled()
+    local p = ActiveProfile(); return p ~= nil and p.controlRaidEnabled ~= false
+end
+function WQ.SetControlRaidEnabled(on)
+    local p = ActiveProfile(); if p then p.controlRaidEnabled = on and true or false end
+end
+
+-- Debug dump (/run Warlock_Qol_Tbc.DebugDumpControl()): feature state, the live unit state the filters
+-- read, and whether the two optional APIs exist on this client. C_LossOfControl is only probed for
+-- information: if it turns out to be present on 2.5.6 it would categorise stuns/silences too, which is
+-- the obvious way to widen this feature later.
+function WQ.DebugDumpControl()
+    local p = ActiveProfile()
+    print(("|cff9900ffWarlockQol|r Loss of Control - active: %s, channel: %s, latched: %s"):format(
+        ControlActive() and "yes" or "no",
+        ControlChannel() or "none (solo, or that context is off): echo only",
+        controlLost and "yes" or "no"))
+    print(("  fear=%s charm=%s party=%s raid=%s combatOnly=%s echo=%s"):format(
+        p and tostring(p.controlFear) or "?", p and tostring(p.controlCharm) or "?",
+        tostring(WQ.IsControlPartyEnabled()), tostring(WQ.IsControlRaidEnabled()),
+        p and tostring(p.controlCombatOnly) or "?", p and tostring(p.controlEcho) or "?"))
+    print(("  now: inCombat=%s onTaxi=%s charmed=%s -> kind would be %s"):format(
+        UnitAffectingCombat("player") and "yes" or "no",
+        (UnitOnTaxi and UnitOnTaxi("player")) and "yes" or "no",
+        (UnitIsCharmed and UnitIsCharmed("player")) and "yes" or "no",
+        ControlKind()))
+    print(("  API: UnitIsCharmed=%s C_LossOfControl=%s"):format(
+        UnitIsCharmed and "yes" or "no", C_LossOfControl and "yes" or "no"))
+end
+
+-- Fire the real announce path from a timer callback, so there is NO hardware event behind the send
+-- (/run Warlock_Qol_Tbc.DebugSayControl("fear")). Calling SendChatMessage straight from a /run would be
+-- a false pass, because typing the command and pressing Enter IS a hardware event: that is exactly how
+-- the /say restriction was proven on 2.5.6 (direct /run send appeared, identical timer send silently
+-- dropped). Bypasses the transition latch and the taxi/combat filters, but not the feature's own flags,
+-- and it is still group-only, so solo you will only see the echo.
+function WQ.DebugSayControl(kind)
+    kind = (kind == "charm") and "charm" or "fear"
+    if not ControlActive() then
+        print("|cff9900ffWarlockQol|r Loss of Control is off (feature flag or master switch); nothing sent.")
+        return
+    end
+    if not ControlChannel() then
+        print("|cff9900ffWarlockQol|r No announce channel: solo, or party/raid is toggled off. Echo only.")
+    end
+    -- No fallback to a direct call on a client without C_Timer: that would run inside the /run's own
+    -- hardware event and pass when the real thing fails, which is worse than not testing.
+    if not (C_Timer and C_Timer.After) then
+        print("|cff9900ffWarlockQol|r No C_Timer on this client, so this test cannot be run honestly.")
+        return
+    end
+    print(("|cff9900ffWarlockQol|r Loss of Control: saying the %s line in 1s, from a timer (no hardware event)."):format(kind))
+    controlRecent[kind] = nil   -- so a repeated test is not eaten by the throttle
+    C_Timer.After(1, function() SayControlLost(kind) end)
+end
+
 -- ── Profile management API ────────────────────────────────────────────────────
 -- Called by the Profiles page. Each op refreshes the caches + re-syncs the combat-log listener
 -- when the bound profile or its flags may have changed.
@@ -2434,6 +2662,7 @@ function WQ.SwitchProfile(name)
     EnsureProfileSeeded()
     UpdateCombatLogRegistration()   -- the new profile's announcer flags may differ
     SyncCursesToProfile()
+    UpdateControlRegistration()     -- controlEnabled is per-profile too
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- the new profile may pick a different accent colour
     if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- ...and a different backdrop opacity
     return true
@@ -2451,6 +2680,7 @@ function WQ.CreateProfile(name)
     EnsureProfileSeeded()           -- seed the fresh profile's default lines
     UpdateCombatLogRegistration()
     SyncCursesToProfile()
+    UpdateControlRegistration()     -- controlEnabled is per-profile too
     return true
 end
 
@@ -2471,6 +2701,7 @@ function WQ.CopyProfileInto(sourceName)
     InitProfile(dst)                -- heal skeleton in case the source was partial
     UpdateCombatLogRegistration()   -- copied announcer flags may differ
     SyncCursesToProfile()
+    UpdateControlRegistration()     -- controlEnabled is per-profile too
     return true
 end
 
@@ -2510,6 +2741,7 @@ function WQ.HardReset()
 
     UpdateCombatLogRegistration()                -- listener state reset with the fresh (all-ON) flags
     SyncCursesToProfile()                        -- ...and the curse tracker back to its default (off)
+    UpdateControlRegistration()                  -- ...and the Loss of Control announcer (also off)
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- back to the default accent colour
     if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- back to the default backdrop opacity
     print(("|cff9900ffWarlockQol|r: reset EVERYTHING to defaults (all profiles and settings) and removed %d macro(s)."):format(removed))
@@ -2668,7 +2900,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)

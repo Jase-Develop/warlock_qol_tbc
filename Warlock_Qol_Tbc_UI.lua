@@ -2379,6 +2379,101 @@ do
     curse.OnPageShow = WQ.SyncCursesPage
 end
 
+-- ── Loss of Control page (Beta) ────────────────────────────────────────────────
+-- Settings only, and the addon's first feature with no HUD and no editable lines: the two messages are
+-- fixed in the core, so this page is nothing but toggles. Header toggle drives controlEnabled, which is
+-- OFF by default like every beta feature. Body = party/raid announce toggles, which effects to announce,
+-- then the noise filters. Group-only: the client blocks addon /say outside a keypress (tested 2026-07-30).
+do
+    local control = NewPage("control", "Loss of Control",
+        "Announces to your party/raid when you lose control of your character, so they know you are not driving.",
+        { get = WQ.IsControlEnabled, set = WQ.SetControlEnabled })
+
+    local PAD_L, WRAP = 8, -16
+    -- Second column of the shared checkbox grid the Curses/Consumables/Cooldowns pages use (8 / 140).
+    local COL2 = 140
+    local syncers = {}   -- widgets to re-sync from their getters on page show
+
+    local function CheckRow(label, y, get, set, x)
+        local cb = CreateFrame("CheckButton", nil, control, "UICheckButtonTemplate,BackdropTemplate")
+        cb:SetSize(22, 22)
+        cb:SetPoint("TOPLEFT", control, "TOPLEFT", x or PAD_L, y)
+        StyleCheckbox(cb)
+        cb:SetScript("OnClick", function(self)
+            set(self:GetChecked())
+            self.RefreshStateColor()
+        end)
+        local fs = control:CreateFontString(nil, "OVERLAY")
+        ApplyFont(fs, "body")
+        fs:SetPoint("LEFT", cb, "RIGHT", 6, 0)
+        fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+        fs:SetText(label)
+        syncers[#syncers + 1] = function() cb:SetChecked(get() and true or false); cb.RefreshStateColor() end
+        return cb
+    end
+
+    local function Heading(text, y)
+        local h = control:CreateFontString(nil, "OVERLAY")
+        ApplyFont(h, "heading")
+        AccentText(h)
+        h:SetPoint("TOPLEFT", control, "TOPLEFT", PAD_L, y)
+        h:SetText(text)
+        return h
+    end
+    local function Caption(text, y)
+        local c = control:CreateFontString(nil, "OVERLAY")
+        ApplyFont(c, "caption")
+        c:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+        c:SetPoint("TOPLEFT", control, "TOPLEFT", PAD_L, y)
+        c:SetPoint("TOPRIGHT", control, "TOPRIGHT", WRAP, y)
+        c:SetJustifyH("LEFT")
+        c:SetText(text)
+        return c
+    end
+    local function Rule(y)
+        local r = control:CreateTexture(nil, "ARTWORK")
+        r:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
+        r:SetPoint("TOPLEFT",  control, "TOPLEFT",  PAD_L, y)
+        r:SetPoint("TOPRIGHT", control, "TOPRIGHT", WRAP,  y)
+        r:SetHeight(1)
+    end
+
+    -- Party/raid announce toggles at the top of the body, same shared control the Soulstone and Banish
+    -- pages use. This announcer is group-only: the client does not let an addon talk in /say outside a
+    -- keypress, so there is no solo channel to offer.
+    local syncControlToggles = BuildAnnounceToggles(control, -8,
+        WQ.IsControlPartyEnabled, WQ.SetControlPartyEnabled,
+        WQ.IsControlRaidEnabled,  WQ.SetControlRaidEnabled)
+
+    Heading("Effects", -76)
+    Caption("Detected with no spell list, so nothing needs updating as you meet new bosses. Stuns and " ..
+            "silences are not covered: they leave you in control of the character.", -96)
+    CheckRow("Fear", -134,
+        function() return WQ.IsControlFear() end, function(v) WQ.SetControlFear(v) end)
+    CheckRow("Charm and mind control", -134,
+        function() return WQ.IsControlCharm() end, function(v) WQ.SetControlCharm(v) end, COL2)
+
+    Rule(-166)
+
+    Heading("Behaviour", -182)
+    CheckRow("Only while in combat", -208,
+        function() return WQ.IsControlCombatOnly() end, function(v) WQ.SetControlCombatOnly(v) end)
+    CheckRow("Also print to my own chat frame", -236,
+        function() return WQ.IsControlEcho() end, function(v) WQ.SetControlEcho(v) end)
+    Caption("Leaving \"only while in combat\" on filters out the harmless cases the game reports the " ..
+            "same way, such as a flight path. The chat echo is local to you, and is all you see when " ..
+            "solo, since the announce needs a party or raid.", -264)
+
+    Rule(-308)
+    Caption("BETA. Fear, charm and mind control only, announced to party/raid.", -324)
+
+    function WQ.SyncControlPage()
+        syncControlToggles()
+        for _, sync in ipairs(syncers) do sync() end
+    end
+    control.OnPageShow = WQ.SyncControlPage
+end
+
 -- ── Settings page (Settings) ───────────────────────────────────────────────────
 -- Cross-cutting look-and-feel options, saved to the active profile: accent colour and the main
 -- window's backdrop opacity. (The UI font is fixed to Arial Narrow: the picker was removed.) Also
@@ -2602,6 +2697,7 @@ do
         { label = "Range Indicator",        page = "range"        },
         { header = "BETA" },
         { label = "Curses",                 page = "curses"       },
+        { label = "Loss of Control",        page = "control"      },
         { header = "SETTINGS" },
         { label = "Settings",               page = "settings"  },
         { label = "Profiles",               page = "profiles"  },
