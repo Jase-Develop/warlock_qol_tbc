@@ -41,8 +41,8 @@ local DEFAULT_SOULSTONE_LINE = "A {circle} soulstone {circle} has been cast on {
 --            deliberately, so an existing profile carries its settings across unchanged.
 --   default  whether that flag seeds on
 -- Messages are deliberately NOT user-editable line pools: they need to be short enough to read at a
--- glance while you are out of action. {skull} is a raid marker token, sent as plain text and rendered as
--- an icon by each receiving client (same as the pet /say lines).
+-- glance while you are out of action, and are wrapped in plain >> << brackets rather than raid marker
+-- tokens so the chat line and the local echo read identically (see ControlMessage).
 local CONTROL_TYPES = {
     fear    = { label = "Feared",         option = "Fear",         flag = "controlFear",    default = true  },
     charm   = { label = "Mind controlled",option = "Mind control", flag = "controlCharm",   default = true  },
@@ -722,23 +722,22 @@ local function LossOfControlCount()
     return 0
 end
 
--- Build the announce text. displayText is the effect's own name straight from the client, so the message
--- names WHAT HAPPENED rather than picking between two fixed strings, and the duration tells the group
--- whether it is worth reacting to. Both are optional and the format degrades cleanly: with neither
--- available it returns exactly the fixed strings the fallback path has always sent.
-local function ControlMessage(cat, displayText, duration)
+-- Build the announce text: ">> Stunned! (4s) <<". The label names WHAT HAPPENED (from the event's
+-- locType, not a guess), and the duration tells the group whether it is worth reacting to. Kept SHORT
+-- deliberately (user call 2026-08-01): this is read at a glance by someone mid-fight, so the effect's
+-- own name (C_LossOfControl's displayText, e.g. "War Stomp") is NOT included even though we have it.
+-- The duration is optional and the format degrades to just ">> Stunned! <<" without it, which is what
+-- the payload-free fallback path always produces.
+--
+-- The >> << brackets replaced {skull} raid marker tokens, which rendered as an icon in chat but showed
+-- as raw "{skull}" text in the local echo. Plain characters read identically in both.
+local function ControlMessage(cat, duration)
     local spec  = CONTROL_TYPES[cat]
     local label = (spec and spec.label) or "Out of control"
     local secs  = (type(duration) == "number" and duration > 0) and math.floor(duration + 0.5) or nil
-    local named = (type(displayText) == "string" and displayText ~= "") and displayText or nil
 
-    local detail
-    if named and secs then detail = ("(%s, %ds)"):format(named, secs)
-    elseif named        then detail = ("(%s)"):format(named)
-    elseif secs         then detail = ("(%ds)"):format(secs) end
-
-    if detail then return ("{skull} %s! %s {skull}"):format(label, detail) end
-    return ("{skull} %s! {skull}"):format(label)
+    if secs then return (">> %s! (%ds) <<"):format(label, secs) end
+    return (">> %s! <<"):format(label)
 end
 
 -- Channel for the announce. "SAY" is what the feature was asked for, and it IS available here, but only
@@ -768,10 +767,10 @@ local function ControlKindGuess()
     return "fear"
 end
 
--- Announce one loss of control. `cat` is a CONTROL_TYPES key; displayText and duration come from
--- C_LossOfControl on the primary path and are nil on the fallback (see ControlMessage, which degrades).
+-- Announce one loss of control. `cat` is a CONTROL_TYPES key; duration comes from C_LossOfControl on
+-- the primary path and is nil on the fallback (see ControlMessage, which degrades to a bare label).
 local controlRecent = {}   -- category -> GetTime() of the last announce
-local function SayControl(cat, displayText, duration)
+local function SayControl(cat, duration)
     if not FeatureOn("controlEnabled") then return end
     local p    = ActiveProfile()
     local spec = CONTROL_TYPES[cat]
@@ -794,11 +793,12 @@ local function SayControl(cat, displayText, duration)
     if last and (now - last) < CONTROL_THROTTLE then return end
     controlRecent[cat] = now
 
-    local msg = ControlMessage(cat, displayText, duration)
+    local msg = ControlMessage(cat, duration)
     if channel then SendChatMessage(msg, channel) end
 
-    -- Local echo of exactly what was sent (or would have been, when solo). Marker tokens are not
-    -- icon-substituted in a print, so this shows the raw token text.
+    -- Local echo of exactly what was sent (or would have been, when solo). Now literally identical to
+    -- the chat line: the >> << brackets are plain characters, unlike the {skull} token they replaced,
+    -- which rendered as an icon in chat but printed as raw "{skull}" text here.
     if p.controlEcho then
         print(("|cff9900ffWarlockQol|r %s"):format(msg))
     end
@@ -838,7 +838,8 @@ local function OnLossOfControlAdded(index)
     if p and p.controlCombatOnly and not UnitAffectingCombat("player") then return end
 
     controlLocAt = GetTime()
-    SayControl(cat, d.displayText, d.duration or d.timeRemaining)
+    -- displayText is deliberately NOT passed on: the message is kept short (see ControlMessage).
+    SayControl(cat, d.duration or d.timeRemaining)
 end
 
 -- Transition latch. PLAYER_CONTROL_LOST can fire several times for one effect (chain fears; a
@@ -846,27 +847,34 @@ end
 -- Clearing this is the only reason PLAYER_CONTROL_GAINED is handled: it is never announced.
 local controlLost = false
 
--- How long the fallback waits before announcing, so LOSS_OF_CONTROL_ADDED gets first refusal. Both
--- events fire for the same effect and their order is not guaranteed, so a plain "has the primary run
--- yet" check is not enough: the fallback has to actually give it a moment. Imperceptible in play.
-local CONTROL_BACKSTOP_DELAY = 0.35
+-- How long the fallback waits before announcing. Two jobs: it gives LOSS_OF_CONTROL_ADDED first refusal
+-- (both events fire for the same effect and their order is not guaranteed, so a plain "has the primary
+-- run yet" check would lose the race), and it lets the unit flags the filters read settle. Imperceptible
+-- in play, so prefer raising it over shaving it.
+local CONTROL_BACKSTOP_DELAY = 0.5
 
 local function OnControlLost()
     if controlLost then return end
     controlLost = true
     if not FeatureOn("controlEnabled") then return end
-    -- Taxi flights fire this event too and are never worth saying out loud. The primary path needs no
-    -- equivalent: the taxi is not a loss-of-control event there.
-    if UnitOnTaxi and UnitOnTaxi("player") then return end
-    local p = ActiveProfile()
-    -- Anything that fears or charms you has already put you in combat, so this filter costs no real
-    -- detections while removing the remaining harmless cases (a flight path, a shapeshift).
-    if p and p.controlCombatOnly and not UnitAffectingCombat("player") then return end
 
-    -- Stand down if C_LossOfControl already announced this effect: it named it, we would only repeat it
-    -- worse. Everything this path can say is a guess (see ControlKindGuess).
+    -- GOTCHA: EVERY filter is evaluated LATE, inside the delayed callback, never here. The unit flags
+    -- they read are not settled at the instant PLAYER_CONTROL_LOST fires: checking UnitOnTaxi at this
+    -- point read FALSE while boarding a flight, so a taxi ride announced "Feared!" (reported in-game
+    -- 2026-08-01, with controlCombatOnly off so the combat filter was not covering for it). Combat is
+    -- the same shape in reverse: a fear that starts the fight may not have flagged you in combat yet.
+    -- If a taxi ever leaks through again, raise CONTROL_BACKSTOP_DELAY rather than adding a filter.
     local function fire()
+        -- Stand down if C_LossOfControl already announced this effect: it NAMED it, we would only
+        -- repeat it worse. Everything this path can say is a guess (see ControlKindGuess).
         if (GetTime() - controlLocAt) < 1 then return end
+        -- Taxi flights fire this event too and are never worth saying out loud. The primary path needs
+        -- no equivalent: a taxi is not a loss-of-control event there, which is why it stayed silent.
+        if UnitOnTaxi and UnitOnTaxi("player") then return end
+        -- Anything that fears or charms you has already put you in combat, so this filter costs no real
+        -- detections while removing the remaining harmless cases (a flight path, a shapeshift).
+        local p = ActiveProfile()
+        if p and p.controlCombatOnly and not UnitAffectingCombat("player") then return end
         SayControl(ControlKindGuess())
     end
     if C_Timer and C_Timer.After then C_Timer.After(CONTROL_BACKSTOP_DELAY, fire) else fire() end
@@ -2848,7 +2856,7 @@ function WQ.DebugSayControl(cat)
     end
     print(("|cff9900ffWarlockQol|r Loss of Control: saying the %s line in 1s, from a timer (no hardware event)."):format(cat))
     controlRecent[cat] = nil   -- so a repeated test is not eaten by the throttle
-    C_Timer.After(1, function() SayControl(cat, "Test Effect", 8) end)
+    C_Timer.After(1, function() SayControl(cat, 8) end)
 end
 
 -- ── Profile management API ────────────────────────────────────────────────────
