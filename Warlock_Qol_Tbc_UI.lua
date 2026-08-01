@@ -2380,18 +2380,19 @@ do
 end
 
 -- ── Loss of Control page (Beta) ────────────────────────────────────────────────
--- Settings only, and the addon's first feature with no HUD and no editable lines: the two messages are
--- fixed in the core, so this page is nothing but toggles. Header toggle drives controlEnabled, which is
--- OFF by default like every beta feature. Body = party/raid announce toggles, which effects to announce,
--- then the noise filters. Group-only: the client blocks addon /say outside a keypress (tested 2026-07-30).
+-- Settings only, and the addon's first feature with no HUD and no editable lines: the messages are built
+-- in the core from the effect's own name and duration, so this page is nothing but toggles. Header toggle
+-- drives controlEnabled, which is OFF by default like every beta feature. Body = party/raid announce
+-- toggles (which only bite out in the world: inside an instance the announce goes to /say), the
+-- per-category effect grid built from CONTROL_TYPE_ORDER, then the noise filters.
 do
     local control = NewPage("control", "Loss of Control",
-        "Announces to your party/raid when you lose control of your character, so they know you are not driving.",
+        "Announces when you lose control or action of your character.",
         { get = WQ.IsControlEnabled, set = WQ.SetControlEnabled })
 
     local PAD_L, WRAP = 8, -16
-    -- Second column of the shared checkbox grid the Curses/Consumables/Cooldowns pages use (8 / 140).
-    local COL2 = 140
+    -- The shared checkbox grid the Curses/Consumables/Cooldowns pages use (8 / 140 / 272).
+    local COL2, COL3 = 140, 272
     local syncers = {}   -- widgets to re-sync from their getters on page show
 
     local function CheckRow(label, y, get, set, x)
@@ -2439,33 +2440,43 @@ do
     end
 
     -- Party/raid announce toggles at the top of the body, same shared control the Soulstone and Banish
-    -- pages use. This announcer is group-only: the client does not let an addon talk in /say outside a
-    -- keypress, so there is no solo channel to offer.
+    -- pages use. NOTE these two only bite OUT IN THE WORLD: inside a dungeon or raid the announce goes
+    -- to /say instead (the client blocks automated /say outside instances, not inside), so a raid-night
+    -- announce never reaches raid chat. The page subtitle is what explains that to the user.
     local syncControlToggles = BuildAnnounceToggles(control, -8,
         WQ.IsControlPartyEnabled, WQ.SetControlPartyEnabled,
         WQ.IsControlRaidEnabled,  WQ.SetControlRaidEnabled)
 
     Heading("Effects", -76)
-    Caption("Detected with no spell list, so nothing needs updating as you meet new bosses. Stuns and " ..
-            "silences are not covered: they leave you in control of the character.", -96)
-    CheckRow("Fear", -134,
-        function() return WQ.IsControlFear() end, function(v) WQ.SetControlFear(v) end)
-    CheckRow("Charm and mind control", -134,
-        function() return WQ.IsControlCharm() end, function(v) WQ.SetControlCharm(v) end, COL2)
+    -- This caption is the ONLY place the instance-only /say rule is explained to the user: the page
+    -- subtitle used to carry it and no longer does. Do not drop it without moving the explanation.
+    Caption("Loss of control is announced in /say inside dungeons/raids while falling back to " ..
+            "party/raid out in the world (Blizzard API limitation).", -96)
+    -- Data-driven from the core's CONTROL_TYPE_ORDER, three per row on the shared grid, so adding a
+    -- category is a core data edit and needs no change here. Six categories = two rows, 28px apart.
+    do
+        local order = WQ.CONTROL_TYPE_ORDER or {}
+        local cols  = { PAD_L, COL2, COL3 }
+        for i, key in ipairs(order) do
+            local spec = WQ.CONTROL_TYPES and WQ.CONTROL_TYPES[key]
+            if spec then
+                CheckRow(spec.option, -134 - (math.floor((i - 1) / 3) * 28),
+                    function() return WQ.IsControlType(key) end,
+                    function(v) WQ.SetControlType(key, v) end,
+                    cols[((i - 1) % 3) + 1])
+            end
+        end
+    end
 
-    Rule(-166)
+    Rule(-194)
 
-    Heading("Behaviour", -182)
-    CheckRow("Only while in combat", -208,
+    Heading("Behaviour", -210)
+    CheckRow("Only while in combat", -236,
         function() return WQ.IsControlCombatOnly() end, function(v) WQ.SetControlCombatOnly(v) end)
-    CheckRow("Also print to my own chat frame", -236,
+    CheckRow("Also print to my own chat frame", -264,
         function() return WQ.IsControlEcho() end, function(v) WQ.SetControlEcho(v) end)
-    Caption("Leaving \"only while in combat\" on filters out the harmless cases the game reports the " ..
-            "same way, such as a flight path. The chat echo is local to you, and is all you see when " ..
-            "solo, since the announce needs a party or raid.", -264)
-
-    Rule(-308)
-    Caption("BETA. Fear, charm and mind control only, announced to party/raid.", -324)
+    Caption("\"Only while in combat\" filters out the harmless cases the game reports the same way, " ..
+            "such as a flight path.", -292)
 
     function WQ.SyncControlPage()
         syncControlToggles()

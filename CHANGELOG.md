@@ -2,21 +2,23 @@
 
 All notable player-facing changes are listed here, newest first.
 
-### [0.26] - 2026-07-30
+### [0.26] - 2026-08-01
 
 #### Added
-- **Loss of Control (Beta)** - announces to your party/raid when you lose control of your character, so
-  they know you are not driving and can dispel you, drop a Tremor Totem or break the mind control. Fear,
-  charm and mind control are covered, each with its own toggle, plus independent Party and Raid toggles
-  like the Soulstone and Banish announcers. **Raid announcing starts switched off**: on a mechanic that
-  fears the whole raid it would be noise, so it is opt-in until a future version can roll simultaneous
-  alerts into a single message.
-- Detection needs **no spell list**, so nothing needs updating as you meet new bosses. The flip side is
-  that stuns and silences are not covered: they leave you in control of the character, so the game
-  reports nothing to detect.
+- **Loss of Control (Beta)** - announces when you lose control of your character, so the people around
+  you know you are out of action and can dispel you, drop a Tremor Totem or break the mind control.
+- The announce **names the effect and how long it lasts** rather than saying something generic, for
+  example "Feared! (Intimidating Shout, 8s)". Six categories, each with its own toggle: fear, mind
+  control, incapacitate, stun, silence and root. **Stun, silence and root start switched off**, since
+  nobody can do anything about those and they would fire constantly; the other three start on.
+- Inside a dungeon or raid it is **said out loud**, so it appears as a speech bubble over your character
+  where the person who can help is already looking, rather than as a line scrolling past in group chat.
+  Out in the world the game does not allow an addon to speak, so it falls back to party or raid chat
+  there, with independent Party and Raid toggles like the Soulstone and Banish announcers.
+- Detection needs **no spell list**, so nothing needs updating as you meet new bosses.
 - **Only while in combat** (on by default) filters out the harmless cases the game reports the same way,
   most obviously flight paths. There is also an optional local chat echo, on by default, which is what
-  you see when playing solo.
+  you see when there is nowhere to announce.
 - Like every beta feature, **the whole thing is off until you turn it on**, under the **Beta** section.
 
 #### Changed

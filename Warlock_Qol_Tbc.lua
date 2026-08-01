@@ -33,13 +33,40 @@ local SOULSTONE_SPELL_NAME = "Soulstone Resurrection"
 local SOULSTONE_THROTTLE   = 3   -- seconds; block a duplicate announce for the same target
 local DEFAULT_SOULSTONE_LINE = "A {circle} soulstone {circle} has been cast on {targetName}"
 
--- Loss of Control (BETA) announce messages. Deliberately NOT user-editable line pools: there are
--- exactly two, they need to be short enough to read at a glance while you are not driving, and the
--- feature has no placeholders to fill. {skull} is a raid marker token, sent as plain text and
--- rendered as an icon by each receiving client (same as the pet /say lines).
-local CONTROL_MSG_FEAR   = "{skull} Feared! {skull}"
-local CONTROL_MSG_CHARM  = "{skull} Mind controlled! {skull}"
-local CONTROL_THROTTLE   = 3   -- seconds; block a dup announce per kind if PLAYER_CONTROL_GAINED never lands
+-- Loss of Control (BETA) announce categories. Data-driven like CURSES / CONSUMABLES / TRACKED_COOLDOWNS:
+-- adding one is a data edit. Per entry:
+--   label    the word the announce leads with ("Feared!", "Mind controlled!")
+--   option   the checkbox label on the config page (the effect, not the state)
+--   flag     the per-profile boolean gating it. The fear/charm names PREDATE this table and are kept
+--            deliberately, so an existing profile carries its settings across unchanged.
+--   default  whether that flag seeds on
+-- Messages are deliberately NOT user-editable line pools: they need to be short enough to read at a
+-- glance while you are out of action. {skull} is a raid marker token, sent as plain text and rendered as
+-- an icon by each receiving client (same as the pet /say lines).
+local CONTROL_TYPES = {
+    fear    = { label = "Feared",         option = "Fear",         flag = "controlFear",    default = true  },
+    charm   = { label = "Mind controlled",option = "Mind control", flag = "controlCharm",   default = true  },
+    incap   = { label = "Incapacitated",  option = "Incapacitate", flag = "controlIncap",   default = true  },
+    stun    = { label = "Stunned",        option = "Stun",         flag = "controlStun",    default = false },
+    silence = { label = "Silenced",       option = "Silence",      flag = "controlSilence", default = false },
+    root    = { label = "Rooted",         option = "Root",         flag = "controlRoot",    default = false },
+}
+local CONTROL_TYPE_ORDER = { "fear", "charm", "incap", "stun", "silence", "root" }
+
+-- C_LossOfControl locType -> one of the categories above. Several collapse onto one on purpose: HORROR
+-- reads as a fear and POSSESS as a charm, because the difference does not change what anyone watching
+-- should do about it. An unmapped locType is IGNORED, not guessed at, and recorded for DebugDumpControl
+-- so a type this client reports and we do not know about is visible rather than silently dropped.
+local CONTROL_LOC_TYPES = {
+    FEAR    = "fear",    HORROR  = "fear",
+    CHARM   = "charm",   POSSESS = "charm",
+    CONFUSE = "incap",   SLEEP   = "incap",   DISORIENT = "incap",
+    STUN    = "stun",    STUN_MECHANIC = "stun",
+    SILENCE = "silence", PACIFY  = "silence", PACIFYSILENCE = "silence", SCHOOL_INTERRUPT = "silence",
+    ROOT    = "root",    SNARE   = "root",
+}
+
+local CONTROL_THROTTLE = 3   -- seconds; block a dup announce per category if the latch never clears
 
 -- True if a combat-log unit's affiliation is mine/party/raid (ignore nearby strangers).
 local AFFILIATION_GROUP = bit.bor(
@@ -198,8 +225,13 @@ local function InitProfile(p)
     -- Raid is opt-in until the comms-aggregated version lands (see the 0.27 note in CLAUDE.md). Party
     -- (a 5-man) stays on: at most a few people, and the announce is genuinely actionable there.
     if p.controlEnabled      == nil then p.controlEnabled      = false end
-    if p.controlFear         == nil then p.controlFear         = true  end
-    if p.controlCharm        == nil then p.controlCharm        = true  end
+    -- Per-category announce flags, seeded from the table so adding a category needs no change here.
+    -- Fear/charm/incapacitate default ON (someone watching can dispel, Tremor or break the effect);
+    -- stun/silence/root default OFF, because nobody can help with those and they fire constantly.
+    for _, ckey in ipairs(CONTROL_TYPE_ORDER) do
+        local cspec = CONTROL_TYPES[ckey]
+        if p[cspec.flag] == nil then p[cspec.flag] = cspec.default end
+    end
     if p.controlPartyEnabled == nil then p.controlPartyEnabled = true  end
     if p.controlRaidEnabled  == nil then p.controlRaidEnabled  = false end
     if p.controlCombatOnly   == nil then p.controlCombatOnly   = true  end
@@ -640,44 +672,116 @@ local function SaySouls()
 end
 
 -- ── Loss of Control announcer (BETA) ─────────────────────────────────────────
--- PLAYER_CONTROL_LOST is the entire detection: a vanilla-era event that fires whenever the player
--- cannot drive their own character (fear, charm, mind control, and taxi flights). It carries NO
--- payload, which is exactly why it is used: there is no curated CC spell-ID list to maintain, unlike
--- every comparable addon. The cost is that it cannot name the effect, so the kind is resolved from
--- UnitIsCharmed at announce time, and stuns/silences are out of scope (they leave you in control of
--- the character, so they never fire this event).
+-- TWO detection paths, deliberately, because only one of them is confirmed to work on 2.5.6:
+--
+-- PRIMARY: LOSS_OF_CONTROL_ADDED via C_LossOfControl. The namespace is confirmed PRESENT on this client
+-- (probed in-game 2026-07-30) and each entry carries locType / displayText / duration, so the announce
+-- can NAME the effect and say how long it lasts instead of guessing between two fixed strings. It also
+-- reaches stuns, silences and roots, which the fallback below is structurally blind to, and it needs no
+-- taxi filter (a flight path is not a loss-of-control event).
+--
+-- FALLBACK: PLAYER_CONTROL_LOST, a vanilla-era event that fires whenever the player cannot drive their
+-- own character (fear, charm, mind control, taxi). It carries NO payload, so it can only report that
+-- SOMETHING took the wheel: the category is guessed from UnitIsCharmed, and anything that is neither a
+-- charm nor a fear is mislabelled "Feared!". It is kept ONLY because C_LossOfControl EXISTING on 2.5.6
+-- does not prove LOSS_OF_CONTROL_ADDED FIRES there, and a silently dead announcer would be worse than a
+-- roughly-labelled one.
+--
+-- The two are coordinated so they can never both announce: the primary fires immediately and stamps
+-- controlLocAt, the fallback waits CONTROL_BACKSTOP_DELAY and stands down if that stamp is fresh.
+-- ONCE THE IN-GAME TEST SETTLES WHETHER THE EVENT FIRES, DELETE THE PATH THAT LOST.
 
--- Channel for the announce. This started as "SAY", which is what the feature was asked for, and the
--- 2.5.6 client was tested directly (2026-07-30): an identical SendChatMessage(..., "SAY") appears when
--- run from a /run (a hardware event) and is SILENTLY DROPPED from a C_Timer callback, with no Lua error.
--- So the hardware-event restriction on addon /say is real on this client, confirming what the pet and
--- ritual macros already implied, and an event-driven announcer cannot use /say at all. Party/raid is not
--- restricted (it is how the soulstone announcer works), so this is group-only now: nil when solo.
+-- Accessor shim for C_LossOfControl. The namespace is present but WHICH accessor it carries is not
+-- known: retail 9.0+ exposes GetActiveLossOfControlData(i) returning a table, older builds exposed
+-- GetEventInfo(i) returning a flat tuple. Same shape as the GetSpellNameByID / ItemInRange shims:
+-- prefer the modern name, fall back to the old one, and hand back one normalised table so no caller
+-- has to care which client it is on.
+local function LossOfControlData(index)
+    local C = C_LossOfControl
+    -- Type-checked, not just nil-checked: the event's payload shape is unverified on 2.5.6, so a
+    -- non-numeric arg must fall through to the scan rather than be handed to the accessor.
+    if not (C and type(index) == "number") then return nil end
+    if C.GetActiveLossOfControlData then
+        local d = C.GetActiveLossOfControlData(index)
+        return (type(d) == "table" and d.locType) and d or nil
+    end
+    if C.GetEventInfo then
+        local locType, spellID, displayText, _, startTime, timeRemaining, duration = C.GetEventInfo(index)
+        if not locType then return nil end
+        return { locType = locType, spellID = spellID, displayText = displayText,
+                 startTime = startTime, timeRemaining = timeRemaining, duration = duration }
+    end
+    return nil
+end
+
+local function LossOfControlCount()
+    local C = C_LossOfControl
+    if not C then return 0 end
+    if C.GetActiveLossOfControlDataCount then return C.GetActiveLossOfControlDataCount() or 0 end
+    if C.GetNumEvents then return C.GetNumEvents() or 0 end
+    return 0
+end
+
+-- Build the announce text. displayText is the effect's own name straight from the client, so the message
+-- names WHAT HAPPENED rather than picking between two fixed strings, and the duration tells the group
+-- whether it is worth reacting to. Both are optional and the format degrades cleanly: with neither
+-- available it returns exactly the fixed strings the fallback path has always sent.
+local function ControlMessage(cat, displayText, duration)
+    local spec  = CONTROL_TYPES[cat]
+    local label = (spec and spec.label) or "Out of control"
+    local secs  = (type(duration) == "number" and duration > 0) and math.floor(duration + 0.5) or nil
+    local named = (type(displayText) == "string" and displayText ~= "") and displayText or nil
+
+    local detail
+    if named and secs then detail = ("(%s, %ds)"):format(named, secs)
+    elseif named        then detail = ("(%s)"):format(named)
+    elseif secs         then detail = ("(%ds)"):format(secs) end
+
+    if detail then return ("{skull} %s! %s {skull}"):format(label, detail) end
+    return ("{skull} %s! {skull}"):format(label)
+end
+
+-- Channel for the announce. "SAY" is what the feature was asked for, and it IS available here, but only
+-- inside an instance: automated SAY/YELL is blocked OUT IN THE WORLD, which is a different rule from the
+-- one v0.26 inferred. The v0.26 test (2026-07-30) sent from a /run and from a C_Timer callback while
+-- standing in the world, saw the timer send silently dropped, and concluded that the hardware-event
+-- restriction was what blocked it. That reading was too broad: permission is granted by EITHER a
+-- hardware event OR being in an instance, and the test only ever varied the first. Confirmed 2026-08-01
+-- against WeakAuras, which guards its own say action with exactly this test and documents it in its
+-- options UI ("Automated Messages to SAY and YELL are blocked outside of Instances"), and against a
+-- combat-log-triggered TBC Anniversary WeakAura observed announcing in /say in-game.
+--
+-- So: a bubble over your head inside a dungeon or raid, which is where being feared or MC'd matters and
+-- where the people who can help are already looking. Out in the world (world PvP) it falls back to the
+-- party/raid toggles, and is nil when solo.
 local function ControlChannel()
+    if IsInInstance() then return "SAY" end
     return GroupAnnounceChannel("control")
 end
 
--- "charm" when something else is driving (charm / mind control / possession), else "fear".
--- Existence-guarded like the other version shims: on a client without UnitIsCharmed every control
--- loss reads as a fear, which is much the more common case.
-local function ControlKind()
+-- FALLBACK-PATH ONLY category guess: "charm" when something else is driving (charm / mind control /
+-- possession), else "fear". Existence-guarded like the other version shims. This is the guess the
+-- primary path exists to replace: with no payload to read, anything that is neither a charm nor a fear
+-- comes out as "Feared!". Never call it from the C_LossOfControl path, which knows the real answer.
+local function ControlKindGuess()
     if UnitIsCharmed and UnitIsCharmed("player") then return "charm" end
     return "fear"
 end
 
--- Announce one loss of control. `kind` is "fear" or "charm" (from ControlKind).
-local controlRecent = {}   -- kind -> GetTime() of the last announce
-local function SayControlLost(kind)
+-- Announce one loss of control. `cat` is a CONTROL_TYPES key; displayText and duration come from
+-- C_LossOfControl on the primary path and are nil on the fallback (see ControlMessage, which degrades).
+local controlRecent = {}   -- category -> GetTime() of the last announce
+local function SayControl(cat, displayText, duration)
     if not FeatureOn("controlEnabled") then return end
-    local p = ActiveProfile()
-    if not p then return end
+    local p    = ActiveProfile()
+    local spec = CONTROL_TYPES[cat]
+    if not (p and spec) then return end
 
-    -- Per-kind opt-out.
-    if kind == "charm" then
-        if not p.controlCharm then return end
-    elseif not p.controlFear then
-        return
-    end
+    -- Per-category opt-out. Absent reads as the category's own default, so a profile written before
+    -- this category existed behaves as if it had been seeded.
+    local on = p[spec.flag]
+    if on == nil then on = spec.default end
+    if not on then return end
 
     -- nil = solo, or that context's toggle is off. Not a bail on its own: the local echo is still
     -- worth printing when there is nobody to announce to.
@@ -686,11 +790,11 @@ local function SayControlLost(kind)
 
     -- Secondary safety only: the caller's transition latch is what normally stops a repeat.
     local now  = GetTime()
-    local last = controlRecent[kind]
+    local last = controlRecent[cat]
     if last and (now - last) < CONTROL_THROTTLE then return end
-    controlRecent[kind] = now
+    controlRecent[cat] = now
 
-    local msg = (kind == "charm") and CONTROL_MSG_CHARM or CONTROL_MSG_FEAR
+    local msg = ControlMessage(cat, displayText, duration)
     if channel then SendChatMessage(msg, channel) end
 
     -- Local echo of exactly what was sent (or would have been, when solo). Marker tokens are not
@@ -700,22 +804,72 @@ local function SayControlLost(kind)
     end
 end
 
+-- PRIMARY detection. The event's payload differs across builds (some pass the index of the new entry,
+-- some pass nothing), so the index is used when supplied and the active list is scanned for the newest
+-- entry otherwise: either way this ends up with one normalised entry.
+local controlLocAt   = 0    -- GetTime() when this path last announced; tells the fallback to stand down
+local controlLocSeen = {}   -- locType strings this client reported that CONTROL_LOC_TYPES lacks
+local controlLocFired = false   -- has the event EVER fired here? The one thing the in-game test settles
+
+local function OnLossOfControlAdded(index)
+    if not FeatureOn("controlEnabled") then return end
+    controlLocFired = true
+
+    local d = LossOfControlData(index)
+    if not d then
+        local best
+        for i = 1, LossOfControlCount() do
+            local e = LossOfControlData(i)
+            if e and (not best or (e.startTime or 0) >= (best.startTime or 0)) then best = e end
+        end
+        d = best
+    end
+    if not d then return end
+
+    local cat = CONTROL_LOC_TYPES[d.locType]
+    if not cat then
+        controlLocSeen[d.locType] = true   -- surfaced by DebugDumpControl rather than guessed at
+        return
+    end
+
+    -- No taxi filter here: a flight path is not a loss-of-control event, which is one of the reasons
+    -- this path is preferred. The combat filter still applies, since it is a noise preference.
+    local p = ActiveProfile()
+    if p and p.controlCombatOnly and not UnitAffectingCombat("player") then return end
+
+    controlLocAt = GetTime()
+    SayControl(cat, d.displayText, d.duration or d.timeRemaining)
+end
+
 -- Transition latch. PLAYER_CONTROL_LOST can fire several times for one effect (chain fears; a
 -- druid's form changes fire it repeatedly), so only the EDGE into loss-of-control announces.
 -- Clearing this is the only reason PLAYER_CONTROL_GAINED is handled: it is never announced.
 local controlLost = false
 
+-- How long the fallback waits before announcing, so LOSS_OF_CONTROL_ADDED gets first refusal. Both
+-- events fire for the same effect and their order is not guaranteed, so a plain "has the primary run
+-- yet" check is not enough: the fallback has to actually give it a moment. Imperceptible in play.
+local CONTROL_BACKSTOP_DELAY = 0.35
+
 local function OnControlLost()
     if controlLost then return end
     controlLost = true
     if not FeatureOn("controlEnabled") then return end
-    -- Taxi flights fire this event too and are never worth saying out loud.
+    -- Taxi flights fire this event too and are never worth saying out loud. The primary path needs no
+    -- equivalent: the taxi is not a loss-of-control event there.
     if UnitOnTaxi and UnitOnTaxi("player") then return end
     local p = ActiveProfile()
     -- Anything that fears or charms you has already put you in combat, so this filter costs no real
     -- detections while removing the remaining harmless cases (a flight path, a shapeshift).
     if p and p.controlCombatOnly and not UnitAffectingCombat("player") then return end
-    SayControlLost(ControlKind())
+
+    -- Stand down if C_LossOfControl already announced this effect: it named it, we would only repeat it
+    -- worse. Everything this path can say is a guess (see ControlKindGuess).
+    local function fire()
+        if (GetTime() - controlLocAt) < 1 then return end
+        SayControl(ControlKindGuess())
+    end
+    if C_Timer and C_Timer.After then C_Timer.After(CONTROL_BACKSTOP_DELAY, fire) else fire() end
 end
 
 local function OnControlGained()
@@ -1724,9 +1878,15 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         ClearAllCurses()
         if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
 
+    elseif event == "LOSS_OF_CONTROL_ADDED" then
+        -- Primary detection: the entry carries locType / displayText / duration, so the announce can
+        -- name the effect. The arg is the new entry's index on the builds that pass one.
+        OnLossOfControlAdded(...)
+
     elseif event == "PLAYER_CONTROL_LOST" then
-        -- No payload: this event only says "you are not driving any more". OnControlLost does the
-        -- filtering (taxi, combat) and resolves fear vs charm.
+        -- Fallback only. No payload: this event says nothing but "you are not driving any more".
+        -- OnControlLost does the filtering (taxi, combat), waits for the primary path to have its say,
+        -- and only then guesses the category.
         OnControlLost()
 
     elseif event == "PLAYER_CONTROL_GAINED" then
@@ -1789,9 +1949,9 @@ UpdateCursesRegistration = function()
     end
 end
 
--- The Loss of Control announcer owns PLAYER_CONTROL_LOST/GAINED outright: nothing else in the addon
--- listens for them, so unlike the shared PLAYER_ENTERING_WORLD (see UpdateWorldRegistration) a plain
--- register/unregister pair is safe here. Turning the feature on also clears the transition latch, so a
+-- The Loss of Control announcer owns all three of its events outright: nothing else in the addon listens
+-- for them, so unlike the shared PLAYER_ENTERING_WORLD (see UpdateWorldRegistration) plain
+-- register/unregister pairs are safe here. Turning the feature on also clears the transition latch, so a
 -- latch stranded by a missed PLAYER_CONTROL_GAINED can be cleared without a /reload.
 local function ControlActive() return FeatureOn("controlEnabled") end
 
@@ -1800,9 +1960,15 @@ UpdateControlRegistration = function()
         controlLost = false
         eventFrame:RegisterEvent("PLAYER_CONTROL_LOST")
         eventFrame:RegisterEvent("PLAYER_CONTROL_GAINED")
+        -- pcall because RegisterEvent RAISES on an event name the client does not know. C_LossOfControl
+        -- is present on 2.5.6 so this should hold, but a wrong guess here must not break the fallback.
+        if C_LossOfControl then
+            pcall(eventFrame.RegisterEvent, eventFrame, "LOSS_OF_CONTROL_ADDED")
+        end
     else
         eventFrame:UnregisterEvent("PLAYER_CONTROL_LOST")
         eventFrame:UnregisterEvent("PLAYER_CONTROL_GAINED")
+        pcall(eventFrame.UnregisterEvent, eventFrame, "LOSS_OF_CONTROL_ADDED")
     end
 end
 
@@ -2551,13 +2717,31 @@ function WQ.SetControlEnabled(on)
     UpdateControlRegistration()
 end
 
--- Per-kind announce flags (both default on) and the two behaviour flags. No event and no HUD, so
--- these setters just persist: SayControlLost / OnControlLost read them on fire.
-function WQ.IsControlFear()  local p = ActiveProfile(); return p and p.controlFear  or false end
-function WQ.SetControlFear(on)  local p = ActiveProfile(); if p then p.controlFear  = on and true or false end end
+-- Per-category announce flags, driven by the CONTROL_TYPES table so the config page can build itself
+-- from CONTROL_TYPE_ORDER. No event and no HUD, so these setters just persist: SayControl reads them on
+-- fire. Absent reads as the category's own default, so a profile written before a category existed
+-- behaves as if it had been seeded.
+WQ.CONTROL_TYPES      = CONTROL_TYPES
+WQ.CONTROL_TYPE_ORDER = CONTROL_TYPE_ORDER
 
-function WQ.IsControlCharm() local p = ActiveProfile(); return p and p.controlCharm or false end
-function WQ.SetControlCharm(on) local p = ActiveProfile(); if p then p.controlCharm = on and true or false end end
+function WQ.IsControlType(key)
+    local spec, p = CONTROL_TYPES[key], ActiveProfile()
+    if not (spec and p) then return false end
+    local v = p[spec.flag]
+    if v == nil then return spec.default end
+    return v and true or false
+end
+function WQ.SetControlType(key, on)
+    local spec, p = CONTROL_TYPES[key], ActiveProfile()
+    if spec and p then p[spec.flag] = on and true or false end
+end
+
+-- Named fear/charm accessors kept as thin aliases: they are published API and predate the table.
+function WQ.IsControlFear()  return WQ.IsControlType("fear") end
+function WQ.SetControlFear(on)  WQ.SetControlType("fear", on) end
+
+function WQ.IsControlCharm() return WQ.IsControlType("charm") end
+function WQ.SetControlCharm(on) WQ.SetControlType("charm", on) end
 
 function WQ.IsControlCombatOnly() local p = ActiveProfile(); return p and p.controlCombatOnly or false end
 function WQ.SetControlCombatOnly(on) local p = ActiveProfile(); if p then p.controlCombatOnly = on and true or false end end
@@ -2582,42 +2766,79 @@ function WQ.SetControlRaidEnabled(on)
 end
 
 -- Debug dump (/run Warlock_Qol_Tbc.DebugDumpControl()): feature state, the live unit state the filters
--- read, and whether the two optional APIs exist on this client. C_LossOfControl is only probed for
--- information: if it turns out to be present on 2.5.6 it would categorise stuns/silences too, which is
--- the obvious way to widen this feature later.
+-- read, which of the two detection paths this client can actually use, and any locType it has reported
+-- that CONTROL_LOC_TYPES does not map. This is the readout the in-game test is built around: the ONE
+-- question it exists to answer is whether LOSS_OF_CONTROL_ADDED ever fires here (locFired below).
 function WQ.DebugDumpControl()
     local p = ActiveProfile()
     print(("|cff9900ffWarlockQol|r Loss of Control - active: %s, channel: %s, latched: %s"):format(
         ControlActive() and "yes" or "no",
         ControlChannel() or "none (solo, or that context is off): echo only",
         controlLost and "yes" or "no"))
-    print(("  fear=%s charm=%s party=%s raid=%s combatOnly=%s echo=%s"):format(
-        p and tostring(p.controlFear) or "?", p and tostring(p.controlCharm) or "?",
+    -- The channel above hinges on this: SAY is only permitted to an addon inside an instance.
+    print(("  inInstance=%s (say is instance-only; outside it falls back to party/raid)"):format(
+        IsInInstance() and "yes" or "no"))
+
+    local flags = {}
+    for _, key in ipairs(CONTROL_TYPE_ORDER) do
+        flags[#flags + 1] = ("%s=%s"):format(key, WQ.IsControlType(key) and "on" or "off")
+    end
+    print("  announce: " .. table.concat(flags, " "))
+    print(("  party=%s raid=%s combatOnly=%s echo=%s"):format(
         tostring(WQ.IsControlPartyEnabled()), tostring(WQ.IsControlRaidEnabled()),
         p and tostring(p.controlCombatOnly) or "?", p and tostring(p.controlEcho) or "?"))
-    print(("  now: inCombat=%s onTaxi=%s charmed=%s -> kind would be %s"):format(
+    print(("  now: inCombat=%s onTaxi=%s charmed=%s -> fallback would guess %s"):format(
         UnitAffectingCombat("player") and "yes" or "no",
         (UnitOnTaxi and UnitOnTaxi("player")) and "yes" or "no",
         (UnitIsCharmed and UnitIsCharmed("player")) and "yes" or "no",
-        ControlKind()))
-    print(("  API: UnitIsCharmed=%s C_LossOfControl=%s"):format(
-        UnitIsCharmed and "yes" or "no", C_LossOfControl and "yes" or "no"))
+        ControlKindGuess()))
+
+    -- Which accessor the shim resolved to. "none" with C_LossOfControl=yes means the namespace exists
+    -- but carries neither known accessor, and the primary path can never produce data.
+    local C = C_LossOfControl
+    local accessor = "none"
+    if C and C.GetActiveLossOfControlData then accessor = "GetActiveLossOfControlData (retail 9.0+ shape)"
+    elseif C and C.GetEventInfo           then accessor = "GetEventInfo (legacy shape)" end
+    print(("  API: UnitIsCharmed=%s C_LossOfControl=%s accessor=%s"):format(
+        UnitIsCharmed and "yes" or "no", C and "yes" or "no", accessor))
+    print(("  primary path: locFired=%s activeEntries=%d  <- locFired=no after a real fear means the"):format(
+        controlLocFired and "YES" or "no", LossOfControlCount()))
+    print("                event does not fire here, so keep the fallback and drop the primary.")
+
+    for i = 1, LossOfControlCount() do
+        local d = LossOfControlData(i)
+        if d then
+            print(("    [%d] locType=%s -> %s  text=%s dur=%s"):format(
+                i, tostring(d.locType), tostring(CONTROL_LOC_TYPES[d.locType] or "UNMAPPED"),
+                tostring(d.displayText), tostring(d.duration or d.timeRemaining)))
+        end
+    end
+    for locType in pairs(controlLocSeen) do
+        print(("  UNMAPPED locType seen this session: %s (add it to CONTROL_LOC_TYPES)"):format(locType))
+    end
 end
 
 -- Fire the real announce path from a timer callback, so there is NO hardware event behind the send
 -- (/run Warlock_Qol_Tbc.DebugSayControl("fear")). Calling SendChatMessage straight from a /run would be
--- a false pass, because typing the command and pressing Enter IS a hardware event: that is exactly how
--- the /say restriction was proven on 2.5.6 (direct /run send appeared, identical timer send silently
--- dropped). Bypasses the transition latch and the taxi/combat filters, but not the feature's own flags,
--- and it is still group-only, so solo you will only see the echo.
-function WQ.DebugSayControl(kind)
-    kind = (kind == "charm") and "charm" or "fear"
+-- a false pass, because typing the command and pressing Enter IS a hardware event, and that alone is
+-- enough to let a SAY through anywhere. WHERE you run this is now part of the test: in the world the
+-- say path is blocked by design and you should see nothing, inside an instance it should appear as a
+-- bubble. Bypasses the transition latch and the taxi/combat filters, but not the feature's own flags.
+-- `cat` is any CONTROL_TYPES key (fear / charm / incap / stun / silence / root), defaulting to fear.
+-- The sample effect name and duration are passed so the message reads like a real one from the primary
+-- path rather than the bare fallback string.
+function WQ.DebugSayControl(cat)
+    cat = CONTROL_TYPES[cat] and cat or "fear"
     if not ControlActive() then
         print("|cff9900ffWarlockQol|r Loss of Control is off (feature flag or master switch); nothing sent.")
         return
     end
+    if not WQ.IsControlType(cat) then
+        print(("|cff9900ffWarlockQol|r %s announcing is switched off on the page; nothing will be sent."):format(cat))
+        return
+    end
     if not ControlChannel() then
-        print("|cff9900ffWarlockQol|r No announce channel: solo, or party/raid is toggled off. Echo only.")
+        print("|cff9900ffWarlockQol|r No announce channel: solo out in the world, or party/raid is toggled off. Echo only.")
     end
     -- No fallback to a direct call on a client without C_Timer: that would run inside the /run's own
     -- hardware event and pass when the real thing fails, which is worse than not testing.
@@ -2625,9 +2846,9 @@ function WQ.DebugSayControl(kind)
         print("|cff9900ffWarlockQol|r No C_Timer on this client, so this test cannot be run honestly.")
         return
     end
-    print(("|cff9900ffWarlockQol|r Loss of Control: saying the %s line in 1s, from a timer (no hardware event)."):format(kind))
-    controlRecent[kind] = nil   -- so a repeated test is not eaten by the throttle
-    C_Timer.After(1, function() SayControlLost(kind) end)
+    print(("|cff9900ffWarlockQol|r Loss of Control: saying the %s line in 1s, from a timer (no hardware event)."):format(cat))
+    controlRecent[cat] = nil   -- so a repeated test is not eaten by the throttle
+    C_Timer.After(1, function() SayControl(cat, "Test Effect", 8) end)
 end
 
 -- ── Profile management API ────────────────────────────────────────────────────
@@ -2900,7 +3121,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)
