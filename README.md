@@ -18,9 +18,11 @@ one-click macros the addon generates for you. WarlockQol is **dependency-free**.
 - **Curse Tracker** *(beta)* - a movable HUD listing the curses your group's warlocks have out on any mob:
   who cast it, the target and its raid marker, which curse, and the time remaining. Off by default; turn it
   on under the **Beta** section.
-- **Loss of Control** *(beta)* - announces to your party/raid when you are feared, charmed or mind
-  controlled, so they know you are not driving. Needs no spell list, so nothing needs updating as you
-  meet new bosses. Off by default; turn it on under the **Beta** section.
+- **Loss of Control** *(beta)* - announces when you lose control of your character (fear, mind control,
+  incapacitate, stun, silence, root), naming the effect and how long it lasts, so the people around you
+  know you are not driving. Said out loud inside an instance, sent to party/raid out in the world. Needs
+  no spell list, so nothing needs updating as you meet new bosses. Off by default; turn it on under the
+  **Beta** section.
 - **Profiles** - per-character config profiles, with copy and share-by-string export/import.
 
 Chat lines support WoW raid target markers (`{star}`, `{skull}`, …) via a quick-insert row.

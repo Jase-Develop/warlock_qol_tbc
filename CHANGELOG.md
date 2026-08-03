@@ -2,15 +2,15 @@
 
 All notable player-facing changes are listed here, newest first.
 
-### [0.26] - 2026-08-01
+### [0.26] - 2026-08-03
 
 #### Added
 - **Loss of Control (Beta)** - announces when you lose control of your character, so the people around
   you know you are out of action and can dispel you, drop a Tremor Totem or break the mind control.
 - The announce **names what hit you and how long it lasts** rather than saying something generic, for
   example ">> Stunned! (4s) <<". Six categories, each with its own toggle: fear, mind control,
-  incapacitate, stun, silence and root. **Stun, silence and root start switched off**, since nobody can
-  do anything about those and they would fire constantly; the other three start on.
+  incapacitate, stun, silence and root, all on once you switch the feature on. Untick any you would
+  rather not announce; stun in particular can be chatty on some fights.
 - Inside a dungeon or raid it is **said out loud**, so it appears as a speech bubble over your character
   where the person who can help is already looking, rather than as a line scrolling past in group chat.
   Out in the world the game does not allow an addon to speak, so it falls back to party or raid chat

@@ -47,9 +47,9 @@ local CONTROL_TYPES = {
     fear    = { label = "Feared",         option = "Fear",         flag = "controlFear",    default = true  },
     charm   = { label = "Mind controlled",option = "Mind control", flag = "controlCharm",   default = true  },
     incap   = { label = "Incapacitated",  option = "Incapacitate", flag = "controlIncap",   default = true  },
-    stun    = { label = "Stunned",        option = "Stun",         flag = "controlStun",    default = false },
-    silence = { label = "Silenced",       option = "Silence",      flag = "controlSilence", default = false },
-    root    = { label = "Rooted",         option = "Root",         flag = "controlRoot",    default = false },
+    stun    = { label = "Stunned",        option = "Stun",         flag = "controlStun",    default = true  },
+    silence = { label = "Silenced",       option = "Silence",      flag = "controlSilence", default = true  },
+    root    = { label = "Rooted",         option = "Root",         flag = "controlRoot",    default = true  },
 }
 local CONTROL_TYPE_ORDER = { "fear", "charm", "incap", "stun", "silence", "root" }
 
@@ -226,8 +226,10 @@ local function InitProfile(p)
     -- (a 5-man) stays on: at most a few people, and the announce is genuinely actionable there.
     if p.controlEnabled      == nil then p.controlEnabled      = false end
     -- Per-category announce flags, seeded from the table so adding a category needs no change here.
-    -- Fear/charm/incapacitate default ON (someone watching can dispel, Tremor or break the effect);
-    -- stun/silence/root default OFF, because nobody can help with those and they fire constantly.
+    -- ALL SIX default ON (user call 2026-08-03): the feature itself is off until switched on, so anyone
+    -- who turns it on is opting into the whole thing, and a category they do not want is one click away.
+    -- This reverses the original stun/silence/root default of OFF, which was reasoned from "nobody can
+    -- help with those and they fire constantly": still true, so watch the announce volume in a raid.
     for _, ckey in ipairs(CONTROL_TYPE_ORDER) do
         local cspec = CONTROL_TYPES[ckey]
         if p[cspec.flag] == nil then p[cspec.flag] = cspec.default end
