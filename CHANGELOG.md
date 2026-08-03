@@ -16,9 +16,8 @@ All notable player-facing changes are listed here, newest first.
   Out in the world the game does not allow an addon to speak, so it falls back to party or raid chat
   there, with independent Party and Raid toggles like the Soulstone and Banish announcers.
 - Detection needs **no spell list**, so nothing needs updating as you meet new bosses.
-- **Only while in combat** (on by default) filters out the harmless cases the game reports the same way,
-  most obviously flight paths. There is also an optional local chat echo, on by default, which is what
-  you see when there is nowhere to announce.
+- **Only while in combat** (on by default) keeps it quiet outside a fight. There is also an optional
+  local chat echo, on by default, which is what you see when there is nowhere to announce.
 - Like every beta feature, **the whole thing is off until you turn it on**, under the **Beta** section.
 
 #### Changed
