@@ -2475,14 +2475,12 @@ do
         function() return WQ.IsControlCombatOnly() end, function(v) WQ.SetControlCombatOnly(v) end)
     CheckRow("Print to my own chat frame", -264,
         function() return WQ.IsControlEcho() end, function(v) WQ.SetControlEcho(v) end)
-    -- "PvP" is spelled out as battlegrounds and arenas in the caption below, which is the only place
-    -- the user learns that world PvP is NOT covered by this toggle.
+    -- Nothing on the page spells out that "PvP" means battlegrounds and arenas rather than world PvP
+    -- (user call: keep the caption to the combat filter only). The README and changelog carry it.
     CheckRow("Announce in PvP", -292,
         function() return WQ.IsControlPvpEnabled() end, function(v) WQ.SetControlPvpEnabled(v) end)
     Caption("\"Only while in combat\" filters out the harmless cases the game reports the same way, " ..
-            "such as a flight path. \"Announce in PvP\" covers battlegrounds and arenas, where this is " ..
-            "off by default: PvP is constant crowd control, and it would be said out loud next to the " ..
-            "enemy who cast it.", -320)
+            "such as a flight path.", -320)
 
     function WQ.SyncControlPage()
         syncControlToggles()
