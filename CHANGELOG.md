@@ -2,6 +2,14 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.27] - 2026-08-03
+
+#### Added
+- **Loss of Control** gained an **Also announce in battlegrounds and arenas** option, **off by default**.
+  PvP is constant crowd control, so the announce fires far more often than it is useful there, and
+  because a battleground counts as an instance it would be said out loud right next to the enemy who
+  cast it. World PvP is unaffected: out in the open it still goes to party or raid chat as before.
+
 ### [0.26] - 2026-08-03
 
 #### Added

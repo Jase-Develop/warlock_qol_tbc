@@ -238,6 +238,11 @@ local function InitProfile(p)
     if p.controlRaidEnabled  == nil then p.controlRaidEnabled  = false end
     if p.controlCombatOnly   == nil then p.controlCombatOnly   = true  end
     if p.controlEcho         == nil then p.controlEcho         = true  end
+    -- Battlegrounds and arenas are silent unless asked for (default OFF): PvP is wall-to-wall crowd
+    -- control, so the announce fires constantly and says nothing anyone can act on. Worse, a BG/arena
+    -- IS an instance, so the announce takes the /say path there and broadcasts your CC state to any
+    -- enemy standing next to you. Most people will never want this on.
+    if p.controlPvpEnabled   == nil then p.controlPvpEnabled   = false end
     -- Settings: accent colour (6-hex; default = Warlock purple).
     if p.accent == nil then p.accent = WQ.DEFAULT_ACCENT end
     -- Backdrop opacity (whole percent, default 80): one for the main window (Settings page) plus one
@@ -760,6 +765,14 @@ local function ControlChannel()
     return GroupAnnounceChannel("control")
 end
 
+-- A battleground or arena, matching the instance-type style the HUD auto-shows use (UI-side
+-- InRaidInstance / InPartyInstance). Both count as an instance to ControlChannel above, so without the
+-- opt-out below this would /say through a whole BG.
+local function InPvpInstance()
+    local t = select(2, IsInInstance())
+    return t == "pvp" or t == "arena"
+end
+
 -- FALLBACK-PATH ONLY category guess: "charm" when something else is driving (charm / mind control /
 -- possession), else "fear". Existence-guarded like the other version shims. This is the guess the
 -- primary path exists to replace: with no payload to read, anything that is neither a charm nor a fear
@@ -783,6 +796,13 @@ local function SayControl(cat, duration)
     local on = p[spec.flag]
     if on == nil then on = spec.default end
     if not on then return end
+
+    -- PvP opt-in (default off). Silences the WHOLE announce in a battleground or arena, echo included:
+    -- there is no point printing to your own chat frame what you can already see happening to you, and
+    -- a BG is where this fires most. Deliberately keyed on the INSTANCE TYPE rather than your PvP flag,
+    -- so it is a place you are in rather than a state you are in: world PvP is left announcing, where
+    -- it goes to party/raid (already gated by those toggles) instead of over an enemy's head.
+    if InPvpInstance() and not p.controlPvpEnabled then return end
 
     -- nil = solo, or that context's toggle is off. Not a bail on its own: the local echo is still
     -- worth printing when there is nobody to announce to.
@@ -2759,6 +2779,11 @@ function WQ.SetControlCombatOnly(on) local p = ActiveProfile(); if p then p.cont
 function WQ.IsControlEcho() local p = ActiveProfile(); return p and p.controlEcho or false end
 function WQ.SetControlEcho(on) local p = ActiveProfile(); if p then p.controlEcho = on and true or false end end
 
+-- Opt in to announcing in battlegrounds and arenas. Default OFF, so absent reads as off (unlike the
+-- party/raid pair, where absent reads as on).
+function WQ.IsControlPvpEnabled() local p = ActiveProfile(); return p and p.controlPvpEnabled or false end
+function WQ.SetControlPvpEnabled(on) local p = ActiveProfile(); if p then p.controlPvpEnabled = on and true or false end end
+
 -- Per-context party/raid announce toggles, read by GroupAnnounceChannel("control"). Same contract as
 -- the soulstone/banish pairs: default ON, nil/absent counts as on, and the setters just persist (the
 -- two PLAYER_CONTROL_* listeners stay keyed off controlEnabled alone).
@@ -2788,14 +2813,20 @@ function WQ.DebugDumpControl()
     -- The channel above hinges on this: SAY is only permitted to an addon inside an instance.
     print(("  inInstance=%s (say is instance-only; outside it falls back to party/raid)"):format(
         IsInInstance() and "yes" or "no"))
+    -- A BG/arena is an instance, so without the opt-in this would say through the whole thing.
+    if InPvpInstance() then
+        print(("  inPvpInstance=YES -> %s"):format(
+            (p and p.controlPvpEnabled) and "announcing (PvP opted in)" or "SILENT (PvP announcing is off)"))
+    end
 
     local flags = {}
     for _, key in ipairs(CONTROL_TYPE_ORDER) do
         flags[#flags + 1] = ("%s=%s"):format(key, WQ.IsControlType(key) and "on" or "off")
     end
     print("  announce: " .. table.concat(flags, " "))
-    print(("  party=%s raid=%s combatOnly=%s echo=%s"):format(
+    print(("  party=%s raid=%s pvp=%s combatOnly=%s echo=%s"):format(
         tostring(WQ.IsControlPartyEnabled()), tostring(WQ.IsControlRaidEnabled()),
+        tostring(WQ.IsControlPvpEnabled()),
         p and tostring(p.controlCombatOnly) or "?", p and tostring(p.controlEcho) or "?"))
     print(("  now: inCombat=%s onTaxi=%s charmed=%s -> fallback would guess %s"):format(
         UnitAffectingCombat("player") and "yes" or "no",
@@ -3131,7 +3162,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)
