@@ -2473,14 +2473,16 @@ do
     Heading("Behaviour", -210)
     CheckRow("Only while in combat", -236,
         function() return WQ.IsControlCombatOnly() end, function(v) WQ.SetControlCombatOnly(v) end)
-    CheckRow("Also print to my own chat frame", -264,
+    CheckRow("Print to my own chat frame", -264,
         function() return WQ.IsControlEcho() end, function(v) WQ.SetControlEcho(v) end)
-    -- Stacked rather than sharing a row: these labels are full sentences, so they need the full width.
-    CheckRow("Also announce in battlegrounds and arenas", -292,
+    -- "PvP" is spelled out as battlegrounds and arenas in the caption below, which is the only place
+    -- the user learns that world PvP is NOT covered by this toggle.
+    CheckRow("Announce in PvP", -292,
         function() return WQ.IsControlPvpEnabled() end, function(v) WQ.SetControlPvpEnabled(v) end)
     Caption("\"Only while in combat\" filters out the harmless cases the game reports the same way, " ..
-            "such as a flight path. Battlegrounds and arenas stay silent unless ticked: PvP is constant " ..
-            "crowd control, and it would be said out loud next to the enemy who cast it.", -320)
+            "such as a flight path. \"Announce in PvP\" covers battlegrounds and arenas, where this is " ..
+            "off by default: PvP is constant crowd control, and it would be said out loud next to the " ..
+            "enemy who cast it.", -320)
 
     function WQ.SyncControlPage()
         syncControlToggles()
