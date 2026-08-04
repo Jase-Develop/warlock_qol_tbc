@@ -1400,9 +1400,17 @@ end
 -- beneath it, pinned just under the page divider (above the line list) on the soulstone & banish pages.
 -- Each toggle is independent and defaults ON; the page's header "Enabled" toggle still overrides both (it
 -- gates the whole feature in the core). The getters treat absent as ON. `y` is the heading's top offset.
--- Returns a `sync` fn that pushes the stored state into both boxes — call it from the page's OnPageShow so
+-- Returns a `sync` fn that pushes the stored state into the boxes: call it from the page's OnPageShow so
 -- they track a profile switch.
-local function BuildAnnounceToggles(page, y, getParty, setParty, getRaid, setRaid)
+--
+-- getPvp/setPvp are OPTIONAL and add a third "BG/Arena" box. All three announce pages pass them, so the
+-- row reads the same everywhere, but they are optional because the argument shape has to stay
+-- back-compatible and a future announce page may not have a PvP story. The box defaults OFF everywhere.
+--
+-- WHAT IT DOES DIFFERS BY PAGE, which the shared widget cannot express: on Soulstone/Banish it picks the
+-- channel and REPLACES the other two inside a battleground or arena ("in a BG or arena, do this instead"),
+-- while on Loss of Control it gates that whole announce including the local echo (see its call site).
+local function BuildAnnounceToggles(page, y, getParty, setParty, getRaid, setRaid, getPvp, setPvp)
     local hdr = page:CreateFontString(nil, "OVERLAY")
     ApplyFont(hdr, "heading")            -- matches the cooldown/consumables/range "HUD" heading size
     AccentText(hdr)                      -- accent purple, re-tinted on accent change
@@ -1428,6 +1436,7 @@ local function BuildAnnounceToggles(page, y, getParty, setParty, getRaid, setRai
     end
     local party = box("Party", 8,  getParty, setParty)
     local raid  = box("Raid",  96, getRaid,  setRaid)
+    local pvp   = getPvp and box("BG/Arena", 184, getPvp, setPvp) or nil
 
     -- Horizontal rule separating the announce controls from the line list below (matches the page rules).
     local rule = page:CreateTexture(nil, "ARTWORK")
@@ -1439,6 +1448,7 @@ local function BuildAnnounceToggles(page, y, getParty, setParty, getRaid, setRai
     return function()
         party:SetChecked(getParty()); party.RefreshStateColor()
         raid:SetChecked(getRaid());   raid.RefreshStateColor()
+        if pvp then pvp:SetChecked(getPvp()); pvp.RefreshStateColor() end
     end
 end
 
@@ -1452,7 +1462,8 @@ do
 
     local syncSoulstoneToggles = BuildAnnounceToggles(soulstone, -8,
         WQ.IsSoulstonePartyEnabled, WQ.SetSoulstonePartyEnabled,
-        WQ.IsSoulstoneRaidEnabled,  WQ.SetSoulstoneRaidEnabled)
+        WQ.IsSoulstoneRaidEnabled,  WQ.SetSoulstoneRaidEnabled,
+        WQ.IsSoulstonePvpEnabled,   WQ.SetSoulstonePvpEnabled)
 
     local refreshSoulstone = BuildLineList(soulstone, -72, {
         get    = function() local p = WQ.ActiveProfile(); return p and p.soulstoneLines end,
@@ -1478,10 +1489,11 @@ do
         "When you banish a target, a random line is announced to your party/raid. Spell rank is added automatically.",
         { get = WQ.IsBanishEnabled, set = WQ.SetBanishEnabled })
 
-    -- Party/raid announce toggles at the top of the body (above the Banished/Resisted tabs).
+    -- Party/raid/BG announce toggles at the top of the body (above the Banished/Resisted tabs).
     local syncBanishToggles = BuildAnnounceToggles(banish, -8,
         WQ.IsBanishPartyEnabled, WQ.SetBanishPartyEnabled,
-        WQ.IsBanishRaidEnabled,  WQ.SetBanishRaidEnabled)
+        WQ.IsBanishRaidEnabled,  WQ.SetBanishRaidEnabled,
+        WQ.IsBanishPvpEnabled,   WQ.SetBanishPvpEnabled)
 
     -- Which pool the list below edits: successful banishes vs. resisted ones.
     local selectedKind = "banished"   -- "banished" | "resisted"
@@ -2439,13 +2451,20 @@ do
         r:SetHeight(1)
     end
 
-    -- Party/raid announce toggles at the top of the body, same shared control the Soulstone and Banish
-    -- pages use. NOTE these two only bite OUT IN THE WORLD: inside a dungeon or raid the announce goes
-    -- to /say instead (the client blocks automated /say outside instances, not inside), so a raid-night
-    -- announce never reaches raid chat. The page subtitle is what explains that to the user.
+    -- Party/raid/BG announce toggles at the top of the body, same shared control the Soulstone and Banish
+    -- pages use. NOTE Party and Raid only bite OUT IN THE WORLD: inside a dungeon or raid the announce
+    -- goes to /say instead (the client blocks automated /say outside instances, not inside), so a
+    -- raid-night announce never reaches raid chat. The Effects caption is what explains that to the user.
+    --
+    -- BG/Arena sits here for consistency with the other two announce pages (it lived in the Behaviour
+    -- section below until 2026-08-04), but it is NOT the same kind of switch as theirs: on those pages it
+    -- picks the channel, whereas controlPvpEnabled gates the whole announce INCLUDING the local echo, and
+    -- when it is on the message goes to /say (a BG is an instance) rather than to party/raid. Behaviour
+    -- deliberately unchanged by the move; only the control's home changed.
     local syncControlToggles = BuildAnnounceToggles(control, -8,
         WQ.IsControlPartyEnabled, WQ.SetControlPartyEnabled,
-        WQ.IsControlRaidEnabled,  WQ.SetControlRaidEnabled)
+        WQ.IsControlRaidEnabled,  WQ.SetControlRaidEnabled,
+        WQ.IsControlPvpEnabled,   WQ.SetControlPvpEnabled)
 
     Heading("Effects", -76)
     -- This caption is the ONLY place the instance-only /say rule is explained to the user: the page
@@ -2475,12 +2494,8 @@ do
         function() return WQ.IsControlCombatOnly() end, function(v) WQ.SetControlCombatOnly(v) end)
     CheckRow("Print to my own chat frame", -264,
         function() return WQ.IsControlEcho() end, function(v) WQ.SetControlEcho(v) end)
-    -- Nothing on the page spells out that "PvP" means battlegrounds and arenas rather than world PvP
-    -- (user call: keep the caption to the combat filter only). The README and changelog carry it.
-    CheckRow("Announce in PvP", -292,
-        function() return WQ.IsControlPvpEnabled() end, function(v) WQ.SetControlPvpEnabled(v) end)
     Caption("\"Only while in combat\" filters out the harmless cases the game reports the same way, " ..
-            "such as a flight path.", -320)
+            "such as a flight path.", -292)
 
     function WQ.SyncControlPage()
         syncControlToggles()

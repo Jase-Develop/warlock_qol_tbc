@@ -181,6 +181,11 @@ local function InitProfile(p)
     if p.soulstoneRaidEnabled  == nil then p.soulstoneRaidEnabled  = true end
     if p.banishPartyEnabled    == nil then p.banishPartyEnabled    = true end
     if p.banishRaidEnabled     == nil then p.banishRaidEnabled     = true end
+    -- Battleground/arena announce toggles, default OFF (the other way to the pair above): a BG groups
+    -- you with up to 39 strangers, so this stays silent until deliberately switched on. Opt-in rather
+    -- than a hard block so a premade group can still use it.
+    if p.soulstonePvpEnabled   == nil then p.soulstonePvpEnabled   = false end
+    if p.banishPvpEnabled      == nil then p.banishPvpEnabled      = false end
     if p.trackerEnabled   == nil then p.trackerEnabled   = true end
     -- trackerShowRaid/Party = auto-show HUD on entering a raid / party dungeon (raid on, party OFF by
     -- default). trackedCds[key]=false disables a cooldown (absent = tracked).
@@ -542,6 +547,17 @@ local function SayLine(family)
     end
 end
 
+-- A battleground or arena, matching the instance-type style the HUD auto-shows use (UI-side
+-- InRaidInstance / InPartyInstance). Read by GroupAnnounceChannel below and by the Loss of Control
+-- announcer further down, which both count a BG as an instance and would otherwise blast it.
+-- Deliberately the INSTANCE TYPE and not UnitIsPVP: a place you are in rather than a state you are in,
+-- so nothing flaps as the PvP flag ticks on and off, and a PvP realm (permanently flagged out in
+-- contested territory) still announces normally for ordinary outdoor group play.
+local function InPvpInstance()
+    local t = select(2, IsInInstance())
+    return t == "pvp" or t == "arena"
+end
+
 -- Group chat channel: RAID in a raid, PARTY in a party, else SAY.
 local function GroupChatChannel()
     if IsInRaid() then return "RAID" end
@@ -554,9 +570,27 @@ end
 -- (solo, or that context's toggle is off). `feature` is "soulstone" or "banish"; it reads
 -- <feature>PartyEnabled / <feature>RaidEnabled from the active profile (both default on: only an
 -- explicit false suppresses, so an unhealed old profile still announces).
+--
+-- A battleground or arena is decided by a THIRD toggle, <feature>PvpEnabled, and that one REPLACES the
+-- party/raid pair for the duration rather than stacking with it: a player who keeps Raid off for raid
+-- nights can still opt into premade announces without the two settings contradicting each other. It
+-- also defaults the other way, OFF, so absent suppresses: a BG puts you in a raid of up to 40, so
+-- without this every allied warlock's soulstone would blast the whole BG raid chat, once per addon
+-- user. The channel itself still follows the group shape (RAID in a BG, PARTY in an arena).
+--
+-- Loss of Control also calls this with "control", but only ever from OUTSIDE an instance (ControlChannel
+-- returns SAY first), so the PvP branch is unreachable for it and its own controlPvpEnabled opt-in stays
+-- the single gate there. The flag name happens to line up and carries the same opt-in meaning, so the two
+-- would agree even if that short-circuit were ever removed.
 local function GroupAnnounceChannel(feature)
     local p = ActiveProfile()
     if not p then return nil end
+    if InPvpInstance() then
+        if not p[feature .. "PvpEnabled"] then return nil end
+        if IsInRaid()  then return "RAID"  end
+        if IsInGroup() then return "PARTY" end
+        return nil
+    end
     if IsInRaid() then
         if p[feature .. "RaidEnabled"] == false then return nil end
         return "RAID"
@@ -765,13 +799,9 @@ local function ControlChannel()
     return GroupAnnounceChannel("control")
 end
 
--- A battleground or arena, matching the instance-type style the HUD auto-shows use (UI-side
--- InRaidInstance / InPartyInstance). Both count as an instance to ControlChannel above, so without the
--- opt-out below this would /say through a whole BG.
-local function InPvpInstance()
-    local t = select(2, IsInInstance())
-    return t == "pvp" or t == "arena"
-end
+-- (InPvpInstance is defined up with the announce-channel helpers: the soulstone and banish announcers
+-- gate on it too. Both count as an instance to ControlChannel above, so without the opt-out this
+-- would /say through a whole BG.)
 
 -- FALLBACK-PATH ONLY category guess: "charm" when something else is driving (charm / mind control /
 -- possession), else "fear". Existence-guarded like the other version shims. This is the guess the
@@ -2063,6 +2093,21 @@ function WQ.SetBanishRaidEnabled(on)
     local p = ActiveProfile(); if p then p.banishRaidEnabled = on and true or false end
 end
 
+-- Battleground/arena announce toggles. Same shape as the pair above with the default INVERTED: absent
+-- reads as OFF, so these getters test for an explicit true rather than for `~= false`.
+function WQ.IsSoulstonePvpEnabled()
+    local p = ActiveProfile(); return p ~= nil and p.soulstonePvpEnabled == true
+end
+function WQ.SetSoulstonePvpEnabled(on)
+    local p = ActiveProfile(); if p then p.soulstonePvpEnabled = on and true or false end
+end
+function WQ.IsBanishPvpEnabled()
+    local p = ActiveProfile(); return p ~= nil and p.banishPvpEnabled == true
+end
+function WQ.SetBanishPvpEnabled(on)
+    local p = ActiveProfile(); if p then p.banishPvpEnabled = on and true or false end
+end
+
 -- Macro-feature flags: no event, so the setter just persists (the Say*Line guard reads it).
 function WQ.IsPetEnabled()    local p = ActiveProfile(); return p and p.petEnabled    or false end
 function WQ.SetPetEnabled(on)    local p = ActiveProfile(); if p then p.petEnabled    = on and true or false end end
@@ -3162,7 +3207,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "soulstonePvpEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "banishPvpEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)

@@ -10,8 +10,8 @@ one-click macros the addon generates for you. WarlockQol is **dependency-free**.
 - **Demon Summon Lines** - per-family lines said in `/say` when you summon a demon.
 - **Ritual of Summoning** - a line announced to party/raid when you summon a player.
 - **Ritual of Souls** - a plain line said in `/say` when cast.
-- **Soulstone Announcement** - auto-announces to party/raid when a soulstone is cast in your group.
-- **Banish Announcement** - announces your own banishes (separate landed & resisted pools, automatic rank suffix).
+- **Soulstone Announcement** - auto-announces to party/raid when a soulstone is cast in your group. Quiet in battlegrounds and arenas unless you opt in.
+- **Banish Announcement** - announces your own banishes (separate landed & resisted pools, automatic rank suffix). Same battleground/arena opt-in.
 - **Cooldown Tracker** - a movable HUD showing each party/raid warlock's tracked cooldown (Ready / live countdown).
 - **Missing Consumables** - a movable HUD flagging missing or soon-to-expire raid consumables.
 - **Range Indicator** - a movable text HUD showing your current target's name and your distance to it as a yard range.

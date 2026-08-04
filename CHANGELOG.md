@@ -2,6 +2,28 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.28] - 2026-08-04
+
+#### Added
+- The **Soulstone** and **Banish** announcers gained a third announce toggle, **BG/Arena**, next to the
+  existing Party and Raid ones, and it is **off by default**. A battleground puts you in a raid of up to
+  40 strangers, so until now every soulstone cast anywhere near you went out to the whole battleground
+  raid chat, once for each person running the addon. It now stays quiet there unless you ask for it.
+- Because it is a toggle rather than a block, a premade or PvP guild that finds the announces useful can
+  simply switch them back on.
+
+#### Changed
+- **Loss of Control**'s battleground/arena option moved up next to its Party and Raid toggles and now
+  reads **BG/Arena**, so all three announce pages carry the same row of controls in the same place. It
+  was previously called "Announce in PvP" and sat further down under Behaviour. Only its position and
+  name changed: your setting carries over and it does exactly what it did before.
+- Inside a battleground or arena the new toggle **replaces** Party and Raid rather than being checked on
+  top of them. So you can leave Raid off for raid nights and still have announces in a premade, and the
+  two settings can never contradict each other.
+- World PvP is deliberately **unaffected**. The toggle keys on being in a battleground or arena, not on
+  carrying the PvP flag, so ordinary outdoor group play announces exactly as before, including on a PvP
+  realm where you are flagged permanently in contested territory.
+
 ### [0.27] - 2026-08-03
 
 #### Added
