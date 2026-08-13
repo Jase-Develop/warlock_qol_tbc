@@ -7,8 +7,8 @@ All notable player-facing changes are listed here, newest first.
 #### Changed
 - **The Cooldowns page has merged into the Soulstone page.** Both were about soulstones, and the cooldown
   tracker was only ever going to track the one, so keeping them apart cost you a menu item and a page for
-  nothing. **Soulstone** now has a **Cooldowns** half (the HUD toggles, opacity and tracked options) above
-  an **Announcement** half (the party/raid/BG toggles and your line pool), and the **Cooldowns** menu item
+  nothing. **Soulstone** now has a **Cooldowns HUD** half (show, auto-show and opacity) above an
+  **Announcement** half (the party/raid/BG toggles and your line pool), and the **Cooldowns** menu item
   is gone.
 - The page's **Enabled** toggle now covers both halves. If you want the cooldown HUD without the chat
   announces, untick Party, Raid and BG/Arena under Announcement: the HUD keeps running.
@@ -32,9 +32,10 @@ All notable player-facing changes are listed here, newest first.
   announcers. Worth remembering that both toggles only apply out in the open world: inside an instance
   the announce is said out loud instead, so a raid night never touches raid chat either way.
 - The default **banish resisted** line gained its missing exclamation mark.
-- **None of this changes an existing setup.** These are the defaults for a new profile only, so if you
+- **None of those default changes reach an existing setup.** They apply to a new profile only, so if you
   were already running the addon everything stays exactly as you left it, Curse Tracker included. A
-  **Hard Reset** or a brand new profile picks up the new defaults.
+  **Hard Reset** or a brand new profile picks up the new defaults. The page merge above is the one thing
+  everyone sees, and it carries your current settings across untouched.
 
 ### [0.28] - 2026-08-04
 
