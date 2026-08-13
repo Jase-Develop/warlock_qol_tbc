@@ -14,10 +14,10 @@ one-click macros the addon generates for you. WarlockQol is **dependency-free**.
 - **Banish Announcement** - announces your own banishes (separate landed & resisted pools, automatic rank suffix). Same battleground/arena opt-in.
 - **Cooldown Tracker** - a movable HUD showing each party/raid warlock's tracked cooldown (Ready / live countdown).
 - **Missing Consumables** - a movable HUD flagging missing or soon-to-expire raid consumables.
+- **Curse Tracker** - a movable HUD listing the curses your group's warlocks have out on any mob:
+  who cast it, the target and its raid marker, which curse, and the time remaining. Auto-shows when you
+  enter a raid.
 - **Range Indicator** - a movable text HUD showing your current target's name and your distance to it as a yard range.
-- **Curse Tracker** *(beta)* - a movable HUD listing the curses your group's warlocks have out on any mob:
-  who cast it, the target and its raid marker, which curse, and the time remaining. Off by default; turn it
-  on under the **Beta** section.
 - **Loss of Control** *(beta)* - announces when you lose control of your character (fear, mind control,
   incapacitate, stun, silence, root), naming the effect and how long it lasts, so the people around you
   know you are not driving. Said out loud inside an instance, sent to party/raid out in the world. Needs

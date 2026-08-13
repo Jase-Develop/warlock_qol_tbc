@@ -211,14 +211,18 @@ local function InitProfile(p)
     if p.rangeTransparent  == nil then p.rangeTransparent  = true  end
     if p.rangeHideNoTarget == nil then p.rangeHideNoTarget = false end  -- on = hide HUD when untargeted
     if p.rangeFontSize     == nil then p.rangeFontSize     = 16    end
-    -- Curse Tracker (BETA): everything the user might notice defaults OFF, so the feature stays out of
-    -- the way until someone goes looking for it (cursesEnabled, plus both auto-shows). Inside it the
-    -- four curses default ON (trackedCurses[key]=false disables one, absent = tracked), and
-    -- curseHideInactive hides the HUD entirely while nothing is cursed.
-    if p.cursesEnabled     == nil then p.cursesEnabled     = false end
-    if p.curseShowRaid     == nil then p.curseShowRaid     = false end
+    -- Curse Tracker: out of beta as of 0.29, so it now seeds like its Cooldowns/Consumables peers:
+    -- feature on, auto-show in a raid instance on, party (a 5-man) off. The four curses default ON
+    -- (trackedCurses[key]=false disables one, absent = tracked). curseHideInactive defaults OFF, unlike
+    -- the pre-0.29 beta seeding: a HUD that auto-appears in a raid showing its placeholder is how the
+    -- user discovers it and drags it somewhere, where one that hides itself until a curse lands is not.
+    -- curseHUD.open stays off (it is top-level, not seeded here), so the auto-show drives first display.
+    -- GOTCHA: none of this reaches an existing profile. Those already store an explicit false from the
+    -- beta build, and InitProfile only ever seeds a nil, so a current user keeps the feature switched off.
+    if p.cursesEnabled     == nil then p.cursesEnabled     = true  end
+    if p.curseShowRaid     == nil then p.curseShowRaid     = true  end
     if p.curseShowParty    == nil then p.curseShowParty    = false end
-    if p.curseHideInactive == nil then p.curseHideInactive = true  end
+    if p.curseHideInactive == nil then p.curseHideInactive = false end
     if not p.trackedCurses then p.trackedCurses = {} end
     -- Loss of Control (BETA): same rule, the feature itself defaults OFF. Inside it both effect kinds
     -- default on and controlCombatOnly filters out taxi flights and other harmless control loss.
@@ -1543,7 +1547,7 @@ local function ScanConsumables()
 end
 
 -- ── Curse Tracker (core: combat-log fed; party AND raid) ──────────────────────
--- BETA. Shows which raid curses group warlocks currently have out, on ANY mob (not only your target),
+-- Shows which raid curses group warlocks currently have out, on ANY mob (not only your target),
 -- with who cast each one and how long it has left. Purely combat-log driven, and deliberately so:
 -- UnitAura can read only a unit we hold a token for (target/focus/nameplate), which would miss every
 -- mob nobody is looking at and could not reliably name the caster. One combat-log event carries the
@@ -1896,7 +1900,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             end
         end
 
-        -- Curse Tracker (BETA) rides this same listener. Its own `if` rather than another elseif: the
+        -- Curse Tracker rides this same listener. Its own `if` rather than another elseif: the
         -- announcers above match on spell name, which can never be one of ours, so the two are
         -- independent. Subevent compares come first because this runs on EVERY combat-log event.
         -- The three death/despawn subevents all drop a unit's rows: UNIT_DIED (normal kill),
@@ -2693,7 +2697,7 @@ WQ.CURSE_ORDER = CURSE_ORDER
 
 function WQ.IsCursesActive() return CursesActive() end
 
--- Enabled flag (per-profile, default OFF: this is a beta feature). Setter re-syncs the shared
+-- Enabled flag (per-profile, default ON since 0.29 took this out of beta). Setter re-syncs the shared
 -- combat-log listener and the HUD.
 function WQ.IsCursesEnabled() local p = ActiveProfile(); return p and p.cursesEnabled or false end
 function WQ.SetCursesEnabled(on)
@@ -2705,7 +2709,8 @@ function WQ.SetCursesEnabled(on)
     if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
 end
 
--- Per-profile "auto-show HUD" flags. BOTH default off (beta): opt in per context.
+-- Per-profile "auto-show HUD" flags, matching the Cooldowns/Consumables pair since 0.29: raid on,
+-- party (a 5-man dungeon) opt-in.
 function WQ.IsCurseShowRaid()  local p = ActiveProfile(); return p and p.curseShowRaid  or false end
 function WQ.SetCurseShowRaid(on)
     local p = ActiveProfile(); if p then p.curseShowRaid = on and true or false end
@@ -2717,8 +2722,8 @@ function WQ.SetCurseShowParty(on)
     if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
 end
 
--- Per-profile "hide when no curses are active" flag (default ON). Off = the HUD stays put showing a
--- placeholder line, which is also how you find it to drag it somewhere.
+-- Per-profile "hide when no curses are active" flag (default OFF since 0.29). Off = the HUD stays put
+-- showing a placeholder line, which is also how you find it to drag it somewhere.
 function WQ.IsCurseHideInactive() local p = ActiveProfile(); return p and p.curseHideInactive or false end
 function WQ.SetCurseHideInactive(on)
     local p = ActiveProfile(); if p then p.curseHideInactive = on and true or false end

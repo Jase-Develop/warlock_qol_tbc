@@ -2,6 +2,22 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.29] - 2026-08-13
+
+#### Changed
+- **The Curse Tracker is no longer beta.** It moved out of the **Beta** menu section and now sits under
+  **Party/Raid** with the other group HUDs, between Consumables and Range Indicator. It has been tested
+  in a raid since 0.25, including the multi-warlock and target-death cases, so there was nothing left
+  for the label to warn about.
+- With that, it now starts up like its neighbours instead of switched off: the feature is **on**,
+  **Auto-show in raid** is **on**, and Auto-show in party stays off. All four curses are tracked.
+- **Hide when no curses are active** now defaults **off**, so the HUD appears with a "No curses active"
+  placeholder when you first walk into a raid. That is deliberate: a HUD that hides itself until a curse
+  lands is one you cannot find in order to drag it where you want it. Tick the option once it is parked.
+- **None of this changes an existing setup.** These are the defaults for a new profile only, so if you
+  were already running the addon the Curse Tracker stays exactly as you left it, including switched off.
+  A **Hard Reset** or a brand new profile picks up the new defaults.
+
 ### [0.28] - 2026-08-04
 
 #### Added

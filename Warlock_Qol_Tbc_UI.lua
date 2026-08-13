@@ -2278,10 +2278,11 @@ do
     rng.OnPageShow = WQ.SyncRangePage
 end
 
--- ── Curse Tracker page (Beta) ──────────────────────────────────────────────────
+-- ── Curse Tracker page ─────────────────────────────────────────────────────────
 -- Settings-only page for the Curse HUD (a separate frame at the end of the file). Header toggle drives
--- cursesEnabled. BETA, so every switch here defaults OFF: the feature stays invisible to anyone who
--- hasn't gone looking for it. Body = HUD show controls + the tracked-curse list + opacity.
+-- cursesEnabled. Out of beta as of 0.29 and seeded like its Cooldowns/Consumables neighbours (feature
+-- on, auto-show in raid on, party off, Show HUD off), so the raid auto-show is what first displays it.
+-- Body = HUD show controls + the tracked-curse list + opacity.
 do
     local curse = NewPage("curses", "Curse Tracker",
         "A HUD showing which curses your group's warlocks have out, on any mob, and how long each has left.",
@@ -2361,7 +2362,7 @@ do
     Rule(-124)
 
     -- Tracked curses: one checkbox per curse (data-driven from CURSE_ORDER), two per row like the
-    -- Consumables page. All default ON: the feature's own toggle is what keeps it out of the way.
+    -- Consumables page. All default ON: an unwanted curse is one click away, same as the Consumables list.
     Heading("Tracked Curses", -140)
     local y = -164
     for i, key in ipairs(WQ.CURSE_ORDER or {}) do
@@ -2724,9 +2725,9 @@ do
         { label = "Banish",                 page = "banish"       },
         { label = "Cooldowns",              page = "tracking"     },
         { label = "Consumables",            page = "consumables"  },
+        { label = "Curses",                 page = "curses"       },
         { label = "Range Indicator",        page = "range"        },
         { header = "BETA" },
-        { label = "Curses",                 page = "curses"       },
         { label = "Loss of Control",        page = "control"      },
         { header = "SETTINGS" },
         { label = "Settings",               page = "settings"  },
@@ -3762,7 +3763,7 @@ do
     end
 end
 
--- ── Curse Tracker HUD (Beta) ────────────────────────────────────────────────────
+-- ── Curse Tracker HUD ───────────────────────────────────────────────────────────
 -- Standalone movable list of the curses your group's warlocks currently have out, fed entirely by the
 -- core's combat-log store (WQ.GetCurseSnapshot). Row = [caster] [raid marker] [target] [curse] [timer].
 -- Structure vs. ticking are split as on the cooldown HUD: rows are rebuilt on curse events only, while
@@ -4045,8 +4046,9 @@ do
     end)
 
     -- Visibility = the persisted curseHUD.open flag (driven by "Show HUD", the X, and each auto-show
-    -- transition) AND, when "Hide when no curses are active" is on, at least one live row. Both
-    -- auto-show toggles default OFF here: this is a beta feature, so nothing appears unasked.
+    -- transition) AND, when "Hide when no curses are active" is on, at least one live row. Since 0.29
+    -- the raid auto-show defaults ON and that hide flag defaults OFF, so a fresh profile's first sight
+    -- of this HUD is the placeholder appearing on entering a raid, which is what makes it findable.
     local function InRaidInstance()  return IsInRaid() and select(2, IsInInstance()) == "raid" end
     local function InPartyInstance() return IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" end
     local wasInRaid, wasInParty = false, false
