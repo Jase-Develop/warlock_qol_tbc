@@ -5,6 +5,17 @@ All notable player-facing changes are listed here, newest first.
 ### [0.29] - 2026-08-13
 
 #### Changed
+- **The Cooldowns page has merged into the Soulstone page.** Both were about soulstones, and the cooldown
+  tracker was only ever going to track the one, so keeping them apart cost you a menu item and a page for
+  nothing. **Soulstone** now has a **Cooldowns** half (the HUD toggles, opacity and tracked options) above
+  an **Announcement** half (the party/raid/BG toggles and your line pool), and the **Cooldowns** menu item
+  is gone.
+- The page's **Enabled** toggle now covers both halves. If you want the cooldown HUD without the chat
+  announces, untick Party, Raid and BG/Arena under Announcement: the HUD keeps running.
+- **The "Soulstone CD" and "Soulstone Active" tick boxes are gone.** Both are just what the cooldown HUD
+  does now: it shows who has the cooldown running and who is currently carrying a stone, and the page's
+  Enabled toggle is the switch for all of it. Nothing was lost, there is simply one less thing to set.
+- Your existing settings all carry over.
 - **The Curse Tracker is no longer beta.** It moved out of the **Beta** menu section and now sits under
   **Party/Raid** with the other group HUDs, between Consumables and Range Indicator. It has been tested
   in a raid since 0.25, including the multi-warlock and target-death cases, so there was nothing left

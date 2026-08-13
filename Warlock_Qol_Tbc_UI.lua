@@ -520,12 +520,16 @@ end
 -- Anchors its label at (x, y) from `parent`'s TOPLEFT; `getter`/`setter` are that HUD's core
 -- WQ.Get*/Set*Opacity pair. Returns a `sync` fn that pushes the stored value into the widgets (register
 -- it with the page's syncers so it re-reads on show / profile switch).
-local function MakeOpacityRow(parent, x, y, getter, setter)
+-- labelText is OPTIONAL (default "Opacity"): the merged Soulstone page sits this row directly under its
+-- HUD toggles rather than under an "Appearance" heading, so it needs to name itself "HUD Opacity". The
+-- row is a chain of LEFT anchors, so a longer label pushes everything right; at MIN_W 600 the body
+-- column is 416 and the row runs ~374 from x, which absorbs a couple of extra words but not a sentence.
+local function MakeOpacityRow(parent, x, y, getter, setter, labelText)
     local label = parent:CreateFontString(nil, "OVERLAY")
     ApplyFont(label, "body")
     label:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     label:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
-    label:SetText("Opacity")
+    label:SetText(labelText or "Opacity")
 
     local slider = MakeFlatSlider(parent, 150, 0, 100, 1)
     slider:SetPoint("LEFT", label, "RIGHT", 10, 0)
@@ -1410,14 +1414,31 @@ end
 -- WHAT IT DOES DIFFERS BY PAGE, which the shared widget cannot express: on Soulstone/Banish it picks the
 -- channel and REPLACES the other two inside a battleground or arena ("in a BG or arena, do this instead"),
 -- while on Loss of Control it gates that whole announce including the local echo (see its call site).
-local function BuildAnnounceToggles(page, y, getParty, setParty, getRaid, setRaid, getPvp, setPvp)
+--
+-- `opts` is OPTIONAL: { title = <heading text>, caption = <dim line under it> }. The merged Soulstone
+-- page passes both, so this heading doubles as that page's section heading (it is already the right role
+-- and position, and a separate heading above it would stack two accent headings saying the same thing)
+-- and carries its own explanatory line. A caption pushes the checkbox row and the rule down with it.
+local function BuildAnnounceToggles(page, y, getParty, setParty, getRaid, setRaid, getPvp, setPvp, opts)
+    opts = opts or {}
+
     local hdr = page:CreateFontString(nil, "OVERLAY")
     ApplyFont(hdr, "heading")            -- matches the cooldown/consumables/range "HUD" heading size
     AccentText(hdr)                      -- accent purple, re-tinted on accent change
     hdr:SetPoint("TOPLEFT", page, "TOPLEFT", 8, y)
-    hdr:SetText("Announce")
+    hdr:SetText(opts.title or "Announce")
 
     local togY = y - 22                  -- checkbox row sits just under the heading
+    if opts.caption then
+        local cap = page:CreateFontString(nil, "OVERLAY")
+        ApplyFont(cap, "caption")
+        cap:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+        cap:SetPoint("TOPLEFT",  page, "TOPLEFT",  8,   togY)
+        cap:SetPoint("TOPRIGHT", page, "TOPRIGHT", -16, togY)
+        cap:SetJustifyH("LEFT")
+        cap:SetText(opts.caption)
+        togY = togY - 22                 -- one caption line; a longer one would need this widening
+    end
     local function box(label, x, get, set)
         local cb = CreateFrame("CheckButton", nil, page, "UICheckButtonTemplate,BackdropTemplate")
         cb:SetSize(22, 22)
@@ -1452,20 +1473,152 @@ local function BuildAnnounceToggles(page, y, getParty, setParty, getRaid, setRai
     end
 end
 
--- ── Soulstone Announcement page ───────────────────────────────────────────────
--- No macro: fires automatically from the combat log (see core). The header toggle (un)registers the
--- listener via SetSoulstoneEnabled, so the page just needs the line list.
+-- ── Soulstone page (Party/Raid) ───────────────────────────────────────────────
+-- MERGED PAGE (v0.29): the cooldown tracker's own "Cooldowns" page folded in here, because both halves
+-- are about soulstones and TRACKED_ORDER is never going to hold a second warlock cooldown. Two features
+-- on one page, neither with a macro (both are combat-log driven, see core):
+--   Cooldowns  - the movable HUD of each group warlock's soulstone CD, plus who currently HAS one.
+--   Announcement - a random line to party/raid when any group warlock casts a soulstone.
+--
+-- ONE header toggle over BOTH (WQ.Is/SetSoulstoneFeatureEnabled, see the core for why the read is an OR
+-- and what a diverged profile does on first click). Granular control did not go away with the merge: the
+-- Announcement section's own Party/Raid/BG-Arena toggles silence the announcer while the HUD keeps
+-- running, which is the combination anyone would actually want.
+--
+-- LAYOUT IS TIGHT AND THE ORDER MATTERS. BuildLineList reserves a fixed 98px at the page bottom for its
+-- help line, input row and quick-insert row, and takes whatever is left for the scrolling rows, so every
+-- pixel spent above it comes straight out of the visible line count. The page body is 461px at MIN_H 572
+-- (frame 572 - 8 pad - 30 titlebar - 8 pad = content top 46; content 518; subtitle -28, divider -48, page
+-- top -57), and the list ends up ~-232 there, so it gets ~130px = 5 rows at minimum size, 6 at the 600
+-- default, 13 at MAX_H 780. ANY new control added above the list costs rows: the first pass was down at
+-- 2 rows carrying two extra headings and the Soulstone CD / Soulstone Active toggle pair, all since cut.
+--
+-- Offsets below the intro caption are relative to the `body` flow frame, NOT the page, so the whole
+-- stack rides up when that caption fits on one line. See the note at `body`.
 do
-    local soulstone = NewPage("soulstone", "Soulstone Announcement",
-        "When any soulstone is detected (by any warlock in group), a random line is announced to your party/raid.",
-        { get = WQ.IsSoulstoneEnabled, set = WQ.SetSoulstoneEnabled })
+    local soulstone = NewPage("soulstone", "Soulstone",
+        "Manage soulstone announcements and cooldown tracking.",
+        { get = WQ.IsSoulstoneFeatureEnabled, set = WQ.SetSoulstoneFeatureEnabled })
 
-    local syncSoulstoneToggles = BuildAnnounceToggles(soulstone, -8,
+    local PAD_L, WRAP = 8, -16
+    -- The shared checkbox column grid every settings page uses (8 / 140 / 272).
+    local COL1, COL2, COL3 = PAD_L, 140, 272
+    local syncers = {}   -- checkboxes to re-sync from their get() on page show
+
+    -- Flat checkbox + label row at (x/PAD_L, y) within `host`, wired to get/set. Initial state is NOT
+    -- read here (the HUD getters aren't defined until later in the file); OnPageShow runs the registered
+    -- syncer instead.
+    local function CheckRow(host, label, y, get, set, x)
+        local cb = CreateFrame("CheckButton", nil, host, "UICheckButtonTemplate,BackdropTemplate")
+        cb:SetSize(22, 22)
+        cb:SetPoint("TOPLEFT", host, "TOPLEFT", x or PAD_L, y)
+        StyleCheckbox(cb)
+        cb:SetScript("OnClick", function(self)
+            set(self:GetChecked())
+            self.RefreshStateColor()
+        end)
+
+        local fs = host:CreateFontString(nil, "OVERLAY")
+        ApplyFont(fs, "body")
+        fs:SetPoint("LEFT", cb, "RIGHT", 6, 0)
+        fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+        fs:SetText(label)
+
+        syncers[#syncers + 1] = function() cb:SetChecked(get() and true or false); cb.RefreshStateColor() end
+        return cb
+    end
+
+    -- Small accent section heading at y within `host`.
+    local function Heading(host, text, y)
+        local h = host:CreateFontString(nil, "OVERLAY")
+        ApplyFont(h, "heading")
+        AccentText(h)
+        h:SetPoint("TOPLEFT", host, "TOPLEFT", PAD_L, y)
+        h:SetText(text)
+        return h
+    end
+
+    -- Dim caption at y within `host`, wrapping across the body width.
+    local function Caption(host, text, y)
+        local c = host:CreateFontString(nil, "OVERLAY")
+        ApplyFont(c, "caption")
+        c:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+        c:SetPoint("TOPLEFT",  host, "TOPLEFT",  PAD_L, y)
+        c:SetPoint("TOPRIGHT", host, "TOPRIGHT", WRAP,  y)
+        c:SetJustifyH("LEFT")
+        c:SetText(text)
+        return c
+    end
+
+    -- Horizontal rule spanning the body at y within `host` (section separator).
+    local function Rule(host, y)
+        local r = host:CreateTexture(nil, "ARTWORK")
+        r:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
+        r:SetPoint("TOPLEFT",  host, "TOPLEFT",  PAD_L, y)
+        r:SetPoint("TOPRIGHT", host, "TOPRIGHT", WRAP,  y)
+        r:SetHeight(1)
+    end
+
+    -- ── Cooldowns half ────────────────────────────────────────────────────────
+    -- One heading for the whole half, not a "Cooldowns" section wrapping an "HUD" subsection: the page
+    -- title already says Soulstone, so the extra level of hierarchy was a heading's worth of height
+    -- spent saying nothing. Same reason there is no "Tracked" heading over the two toggles below the
+    -- show/auto-show row: "Soulstone CD" and "Soulstone Active" are self-describing.
+    Heading(soulstone, "Cooldowns HUD", -6)
+    local intro = Caption(soulstone,
+        "Track your warlocks' soulstone cooldowns on a movable HUD. CTRL + Click to announce.", -28)
+
+    -- FLOW ANCHOR. Everything below the intro caption lives in this frame, hung off the caption's BOTTOM
+    -- rather than pinned to a fixed page offset. That caption is ONE line on a normal-width window and
+    -- TWO at MIN_W 600, and a fixed offset below it has to budget for the two-line case, which leaves a
+    -- visible dead band at every width where it fits on one (reported in-game against the first pass).
+    -- Same trick the shared page header uses to hang its divider off a wrapping subtitle. Anything added
+    -- to this page goes IN HERE, not on `soulstone`, or it will not reflow with the caption.
+    local body = CreateFrame("Frame", nil, soulstone)
+    body:SetPoint("TOPLEFT",     intro,     "BOTTOMLEFT",  -PAD_L, -8)
+    body:SetPoint("BOTTOMRIGHT", soulstone, "BOTTOMRIGHT",      0,  0)
+
+    -- HUD visibility: three independent toggles in one row. Show HUD = manual open/close; Auto-show in
+    -- raid / party each open the HUD on entering that instance type. Wrapped in closures because the HUD
+    -- getter/setters live later in the file.
+    CheckRow(body, "Show HUD", -2,
+        function() return WQ.IsTrackerHUDOpen() end,  function(v) WQ.SetTrackerHUDOpen(v) end, COL1)
+    CheckRow(body, "Auto-show in raid", -2,
+        function() return WQ.IsTrackerShowRaid() end,
+        function(v)
+            WQ.SetTrackerShowRaid(v)
+            -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
+            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetTrackerHUDOpen(true) end
+        end, COL2)
+    CheckRow(body, "Auto-show in party", -2,
+        function() return WQ.IsTrackerShowParty() end,
+        function(v)
+            WQ.SetTrackerShowParty(v)
+            -- Enabling while already in a party dungeon won't hit a transition, so open the HUD now.
+            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetTrackerHUDOpen(true) end
+        end, COL3)
+
+    -- A "Soulstone CD" / "Soulstone Active" checkbox pair sat here until v0.29. Both halves of the HUD
+    -- are simply what the HUD does now, so the toggles only ever restated the page's Enabled switch.
+    -- Removed along with their flags in the core; nothing here replaces them.
+
+    -- This HUD's backdrop opacity, sat at the foot of its own half instead of in an "Appearance" section
+    -- of its own (the merged page has no room for one), hence the explicit "HUD Opacity" label.
+    syncers[#syncers + 1] = MakeOpacityRow(body, PAD_L, -34,
+        WQ.GetTrackerOpacity, WQ.SetTrackerOpacity, "HUD Opacity")
+
+    Rule(body, -70)
+
+    -- ── Announcement half ─────────────────────────────────────────────────────
+    -- BuildAnnounceToggles' own heading and caption serve as this section's, so there is no separate
+    -- heading above it to pay for.
+    local syncSoulstoneToggles = BuildAnnounceToggles(body, -82,
         WQ.IsSoulstonePartyEnabled, WQ.SetSoulstonePartyEnabled,
         WQ.IsSoulstoneRaidEnabled,  WQ.SetSoulstoneRaidEnabled,
-        WQ.IsSoulstonePvpEnabled,   WQ.SetSoulstonePvpEnabled)
+        WQ.IsSoulstonePvpEnabled,   WQ.SetSoulstonePvpEnabled,
+        { title = "Announcement", caption = "Announce any warlock's soulstone to your group." })
 
-    local refreshSoulstone = BuildLineList(soulstone, -72, {
+    local refreshSoulstone = BuildLineList(body, -168, {
         get    = function() local p = WQ.ActiveProfile(); return p and p.soulstoneLines end,
         add    = function(text) return WQ.AddSoulstoneLine(text) end,
         update = function(idx, text) return WQ.UpdateSoulstoneLine(idx, text) end,
@@ -1474,7 +1627,18 @@ do
         help1  = "|cff8788eeUse |r|cffaaaaaa{targetName}|r|cff8788ee as a placeholder for who got the soulstone|r",
     })
 
+    -- BuildLineList hangs CancelEdit on the frame it was given, but ShowPage and the window's OnHide look
+    -- for it on the PAGE frame. Forward it, or an in-progress line edit would survive leaving the page.
+    soulstone.CancelEdit = body.CancelEdit
+
+    -- Re-sync the checkboxes. Kept under the old name because the tracker HUD's X button calls it after
+    -- flipping "Show HUD" off, to keep this page's checkbox in step.
+    function WQ.SyncTrackerPage()
+        for _, sync in ipairs(syncers) do sync() end
+    end
+
     soulstone.OnPageShow = function()   -- header toggle synced by ShowPage; sync ours + redraw the list
+        WQ.SyncTrackerPage()
         syncSoulstoneToggles()
         refreshSoulstone()
     end
@@ -1893,131 +2057,10 @@ do
     profiles.OnPageShow = RefreshProfilesPage
 end
 
--- ── Cooldowns page (Party/Raid) ───────────────────────────────────────────────
--- Settings-only page for the Cooldown Tracker (works in party AND raid; the HUD is a separate frame
--- at the end of the file).
--- Header toggle drives trackerEnabled; body = HUD display controls + per-cooldown track toggles.
--- Checkboxes re-sync on page show (a profile switch can change the flags).
-do
-    local track = NewPage("tracking", "Cooldowns",
-        "Track your party/raid warlocks' cooldowns on a movable HUD. CTRL + click to announce.",
-        { get = WQ.IsTrackerEnabled, set = WQ.SetTrackerEnabled })
-
-    local PAD_L, WRAP = 8, -16
-    local syncers = {}   -- checkboxes to re-sync from their get() on page show
-
-    -- Flat checkbox + label row at (x/PAD_L, y), wired to get/set. Initial state is NOT read here (some
-    -- HUD getters aren't defined until later); OnPageShow runs the registered syncer instead.
-    local function CheckRow(label, y, get, set, x)
-        local cb = CreateFrame("CheckButton", nil, track, "UICheckButtonTemplate,BackdropTemplate")
-        cb:SetSize(22, 22)
-        cb:SetPoint("TOPLEFT", track, "TOPLEFT", x or PAD_L, y)
-        StyleCheckbox(cb)
-        cb:SetScript("OnClick", function(self)
-            set(self:GetChecked())
-            self.RefreshStateColor()
-        end)
-
-        local fs = track:CreateFontString(nil, "OVERLAY")
-        ApplyFont(fs, "body")
-        fs:SetPoint("LEFT", cb, "RIGHT", 6, 0)
-        fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-        fs:SetText(label)
-
-        syncers[#syncers + 1] = function() cb:SetChecked(get() and true or false); cb.RefreshStateColor() end
-        return cb
-    end
-
-    -- Small accent section heading at y.
-    local function Heading(text, y)
-        local h = track:CreateFontString(nil, "OVERLAY")
-        ApplyFont(h, "heading")
-        AccentText(h)
-        h:SetPoint("TOPLEFT", track, "TOPLEFT", PAD_L, y)
-        h:SetText(text)
-        return h
-    end
-    -- Dim caption at y.
-    local function Caption(text, y)
-        local c = track:CreateFontString(nil, "OVERLAY")
-        ApplyFont(c, "caption")
-        c:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
-        c:SetPoint("TOPLEFT", track, "TOPLEFT", PAD_L, y)
-        c:SetText(text)
-        return c
-    end
-
-    -- Horizontal rule spanning the body at y (section separator).
-    local function Rule(y)
-        local r = track:CreateTexture(nil, "ARTWORK")
-        r:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
-        r:SetPoint("TOPLEFT",  track, "TOPLEFT",  PAD_L, y)
-        r:SetPoint("TOPRIGHT", track, "TOPRIGHT", WRAP,  y)
-        r:SetHeight(1)
-    end
-
-    -- HUD visibility: three independent toggles in one row. Show HUD = manual open/close; Auto-show in
-    -- raid / party each open the HUD on entering that instance type. Wrapped in closures because the HUD
-    -- getter/setters live later in the file.
-    Heading("HUD", -6)
-    CheckRow("Show HUD", -32,
-        function() return WQ.IsTrackerHUDOpen() end,  function(v) WQ.SetTrackerHUDOpen(v) end)
-    CheckRow("Auto-show in raid", -32,
-        function() return WQ.IsTrackerShowRaid() end,
-        function(v)
-            WQ.SetTrackerShowRaid(v)
-            -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
-            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetTrackerHUDOpen(true) end
-        end, 140)   -- shared column grid with the Consumables page (8 / 140 / 272)
-    CheckRow("Auto-show in party", -32,
-        function() return WQ.IsTrackerShowParty() end,
-        function(v)
-            WQ.SetTrackerShowParty(v)
-            -- Enabling while already in a party dungeon won't hit a transition, so open the HUD now.
-            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetTrackerHUDOpen(true) end
-        end, 272)
-    local cap = Caption("Auto-show opens the HUD when you enter a raid or party dungeon (raid on by default, party off).", -60)
-    cap:SetPoint("TOPRIGHT", track, "TOPRIGHT", WRAP, -60)
-    cap:SetJustifyH("LEFT")
-
-    Rule(-88)
-
-    -- Tracked section — the CD checkboxes (data-driven, grows with TRACKED_ORDER) plus the standalone
-    -- "Soulstone Active" toggle (who currently HAS a soulstone buff, vs. the caster's cooldown).
-    Heading("Tracked", -104)
-    local cap2 = Caption("Soulstone CD = each warlock's cooldown timer.  Soulstone Active = who currently has a soulstone.", -126)
-    cap2:SetPoint("TOPRIGHT", track, "TOPRIGHT", WRAP, -126)
-    cap2:SetJustifyH("LEFT")
-    local y = -158
-    for _, key in ipairs(WQ.TRACKED_ORDER or {}) do
-        local spec = WQ.TRACKED_COOLDOWNS and WQ.TRACKED_COOLDOWNS[key]
-        local label = spec and spec.label or key
-        CheckRow(label, y,
-            function() return WQ.IsCooldownTracked(key) end,
-            function(v) WQ.SetCooldownTracked(key, v) end)
-        y = y - 28
-    end
-    CheckRow("Soulstone Active", y,
-        function() return WQ.IsSoulstoneActiveEnabled() end,
-        function(v) WQ.SetSoulstoneActiveEnabled(v) end)
-    y = y - 28
-
-    -- Appearance: this HUD's backdrop opacity (independent of the main window and the other HUDs).
-    Rule(y)
-    Heading("Appearance", y - 16)
-    syncers[#syncers + 1] = MakeOpacityRow(track, PAD_L, y - 42, WQ.GetTrackerOpacity, WQ.SetTrackerOpacity)
-
-    -- Re-sync every widget. Runs on page show, and exposed so the HUD's X button can call it after
-    -- flipping "Show HUD" off, keeping the page checkbox in sync.
-    function WQ.SyncTrackerPage()
-        for _, sync in ipairs(syncers) do sync() end
-    end
-    track.OnPageShow = WQ.SyncTrackerPage
-end
-
 -- ── Missing Consumables page (Party/Raid) ──────────────────────────────────────
 -- Settings-only page for the Missing Consumables HUD (a separate strip at the end of the file). Header
--- toggle drives consumablesEnabled; body = HUD show controls + threshold + per-consumable list. Mirrors Tracking.
+-- toggle drives consumablesEnabled; body = HUD show controls + threshold + per-consumable list. Mirrors
+-- the Soulstone page's Cooldowns half.
 do
     local cons = NewPage("consumables", "Missing Consumables",
         "A HUD that pops up in a party/raid showing the consumables you're missing or about to lose.",
@@ -2723,7 +2766,6 @@ do
         { header = "PARTY/RAID" },
         { label = "Soulstone",              page = "soulstone"    },
         { label = "Banish",                 page = "banish"       },
-        { label = "Cooldowns",              page = "tracking"     },
         { label = "Consumables",            page = "consumables"  },
         { label = "Curses",                 page = "curses"       },
         { label = "Range Indicator",        page = "range"        },
@@ -3119,9 +3161,10 @@ do
             hudEmpty:Hide()
         end
 
-        -- Section 2: "Soulstones Out" — who currently HAS a soulstone buff (optional; toggle-gated).
-        local ssList = (WQ.IsSoulstoneActiveEnabled and WQ.IsSoulstoneActiveEnabled()
-                        and WQ.GetActiveSoulstones and WQ.GetActiveSoulstones()) or {}
+        -- Section 2: "Soulstones Out" — who currently HAS a soulstone buff. Part of what this HUD does
+        -- since v0.29 (its own toggle was removed), so the only gate is the core's TrackerActive(),
+        -- which already decides whether the scan runs at all. An empty list just draws no section.
+        local ssList = (WQ.GetActiveSoulstones and WQ.GetActiveSoulstones()) or {}
         local ssShown = 0
         if #ssList > 0 then
             ssHeader:ClearAllPoints()

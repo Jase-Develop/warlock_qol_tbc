@@ -188,12 +188,12 @@ local function InitProfile(p)
     if p.banishPvpEnabled      == nil then p.banishPvpEnabled      = false end
     if p.trackerEnabled   == nil then p.trackerEnabled   = true end
     -- trackerShowRaid/Party = auto-show HUD on entering a raid / party dungeon (raid on, party OFF by
-    -- default). trackedCds[key]=false disables a cooldown (absent = tracked).
+    -- default). The per-cooldown `trackedCds` map and the `soulstoneActiveEnabled` flag were REMOVED in
+    -- v0.29: with soulstone the only tracked cooldown, both halves of the HUD are simply what the HUD
+    -- does, and their toggles duplicated the feature's own Enabled switch. Stale keys on an old profile
+    -- are harmless (nothing reads them) and are dropped on the next export/import round trip.
     if p.trackerShowRaid  == nil then p.trackerShowRaid  = true  end
     if p.trackerShowParty == nil then p.trackerShowParty = false end
-    -- soulstoneActiveEnabled = show the "Soulstones Out" section (who currently HAS a soulstone buff).
-    if p.soulstoneActiveEnabled == nil then p.soulstoneActiveEnabled = true end
-    if not p.trackedCds   then p.trackedCds = {} end
     -- Missing Consumables: consumeShowRaid/Party = auto-show on entering a raid / party dungeon (raid on,
     -- party OFF by default); consumeThreshold = expiry warning window (secs, default 120);
     -- trackedConsumes[key]=false disables one (absent = tracked).
@@ -1299,14 +1299,6 @@ local function TrackerActive()
     return FeatureOn("trackerEnabled")
 end
 
--- Whether a cooldown is tracked (per-profile trackedCds; absent = tracked, only false disables).
-local function IsCdTracked(cdKey)
-    local p = ActiveProfile()
-    if not p then return false end
-    local t = p.trackedCds
-    return not t or t[cdKey] ~= false
-end
-
 -- Ask everyone to rebroadcast (late-joiner catch-up). Throttled (GROUP_ROSTER_UPDATE spams).
 local lastSyncRequest  = 0
 local lastSyncResponse = 0   -- rate-limits our reply to incoming "R" so a flood can't make us spam
@@ -1373,7 +1365,6 @@ end
 -- else's: record a combat-log guess (won't overwrite a comms entry).
 local function OnTrackedCast(cdKey, sourceName, sourceFlags)
     if not TrackerActive() then return end
-    if not IsCdTracked(cdKey) then return end   -- this cooldown's tracking is toggled off
     local spec = TRACKED_COOLDOWNS[cdKey]
     if not spec then return end
     if IsMine(sourceFlags) then
@@ -1416,16 +1407,10 @@ local function UnitSoulstoneExpiry(unit)
     return nil
 end
 
--- Active for this character = master + tracker on + the per-profile "Soulstone Active" flag.
-local function ActiveSoulstonesActive()
-    local p = ActiveProfile()
-    return TrackerActive() and p and p.soulstoneActiveEnabled and true or false
-end
-
 -- Rescan the group and rebuild ssActive. Returns true if the SET of stoned players changed (so the
 -- HUD knows to rebuild rows vs. just re-tick the countdowns). Clears the store when the feature is off.
 local function ScanActiveSoulstones()
-    if not ActiveSoulstonesActive() then
+    if not TrackerActive() then
         local had = next(ssActive) ~= nil
         ssActive = {}
         return had
@@ -1892,7 +1877,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             -- Feed the Raid CD Tracker (my cast broadcasts real time; a group member's is a guess).
             OnTrackedCast("soulstone", sourceName, sourceFlags)
             -- A stone was just cast on someone — refresh the "Soulstones Out" list immediately.
-            if ActiveSoulstonesActive() then
+            if TrackerActive() then
                 ScanActiveSoulstones()
                 if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
             end
@@ -2161,6 +2146,25 @@ function WQ.SetTrackerEnabled(on)
     if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
 end
 
+-- Combined switch for the merged Soulstone page (v0.29), which folded the old Cooldowns page in and so
+-- has ONE header "Enabled" toggle over TWO independent features. Both flags stay separate underneath
+-- and their own setters are still the API: this pair only exists so the shared page header has a single
+-- get/set to bind to, and it routes through those setters so registration and HUD visibility stay right.
+--
+-- The read is deliberately an OR. A profile can hold the two diverged (cooldown HUD on, announcer off is
+-- a plausible setup, and every pre-0.29 profile could reach it), and the header should read "on" when
+-- ANY of the page's features is live rather than claim the page is off. CONSEQUENCE, accepted: the
+-- first click on a diverged profile collapses both to one state, since the write always sets the pair.
+-- Granular control did not disappear with the page merge, it moved: the announce half is silenced by
+-- its own Party/Raid/BG-Arena toggles while the cooldown half keeps running.
+function WQ.IsSoulstoneFeatureEnabled()
+    return WQ.IsTrackerEnabled() or WQ.IsSoulstoneEnabled()
+end
+function WQ.SetSoulstoneFeatureEnabled(on)
+    WQ.SetTrackerEnabled(on)
+    WQ.SetSoulstoneEnabled(on)
+end
+
 -- Per-profile "auto-show HUD" flags: raid (default on) + party (default off). Re-evaluate HUD visibility.
 function WQ.IsTrackerShowRaid()  local p = ActiveProfile(); return p and p.trackerShowRaid  or false end
 function WQ.SetTrackerShowRaid(on)
@@ -2173,14 +2177,9 @@ function WQ.SetTrackerShowParty(on)
     if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
 end
 
--- Per-cooldown tracking toggle. Off stops recording that cooldown.
-function WQ.IsCooldownTracked(cdKey) return IsCdTracked(cdKey) end
-function WQ.SetCooldownTracked(cdKey, on)
-    local p = ActiveProfile(); if not p then return end
-    p.trackedCds = p.trackedCds or {}
-    p.trackedCds[cdKey] = on and true or false
-    if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
-end
+-- (WQ.Is/SetCooldownTracked lived here until v0.29. With soulstone the only entry in TRACKED_ORDER, a
+-- per-cooldown on/off switch just duplicated the feature's own Enabled toggle. If a second warlock
+-- cooldown ever joins the table, reinstate the pair and the `trackedCds` map alongside it.)
 
 -- Cheap store-only remaining getter (HUD's per-frame tick uses this). 0 = ready/unknown.
 function WQ.GetTrackerRemaining(cdKey, unitName)
@@ -2220,14 +2219,9 @@ function WQ.DebugDumpCooldowns()
     end
 end
 
--- ── Soulstone Active public API ────────────────────────────────────────────────
--- Per-profile flag driving the HUD's "Soulstones Out" section. Setter rescans + rebuilds the HUD.
-function WQ.IsSoulstoneActiveEnabled() local p = ActiveProfile(); return p and p.soulstoneActiveEnabled or false end
-function WQ.SetSoulstoneActiveEnabled(on)
-    local p = ActiveProfile(); if p then p.soulstoneActiveEnabled = on and true or false end
-    ScanActiveSoulstones()
-    if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
-end
+-- (WQ.Is/SetSoulstoneActiveEnabled lived here until v0.29. The HUD's "Soulstones Out" section is now
+-- simply part of what the Cooldowns HUD does, gated by TrackerActive() like the rest of it, so the
+-- separate flag was a switch for half a feature that nobody would turn off on its own.)
 
 -- Rescan the group for soulstone buffs; returns true if the set of stoned players changed. The HUD's
 -- driver calls this on a slow (~1s) tick and rebuilds its rows when it returns true.
@@ -2266,7 +2260,7 @@ end
 -- duration) on each group member, including out-of-range ones? Matched by name = SOULSTONE_SPELL_NAME.
 function WQ.DebugDumpSoulstones()
     print(("|cff9900ffWarlockQol|r Soulstones Out — feature active: %s (matching buff \"%s\")")
-        :format(ActiveSoulstonesActive() and "yes" or "no", SOULSTONE_SPELL_NAME))
+        :format(TrackerActive() and "yes" or "no", SOULSTONE_SPELL_NAME))
     local found = 0
     for _, unit in ipairs(GroupUnits()) do
         if UnitExists(unit) then
@@ -3217,7 +3211,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "soulstonePvpEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "banishPvpEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneActiveEnabled", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "soulstonePvpEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "banishPvpEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)
@@ -3251,20 +3245,11 @@ local function SanitizeProfile(raw)
     for _, key in ipairs(IMPORT_SEED_FIELDS) do
         if type(raw[key]) == "boolean" then p[key] = raw[key] end
     end
-    -- Per-cooldown flags: only TRACKED_ORDER keys, only explicit false (so a foreign string
-    -- can't inject arbitrary keys).
-    if type(raw.trackedCds) == "table" then
-        local t
-        for _, cdKey in ipairs(TRACKED_ORDER) do
-            if raw.trackedCds[cdKey] == false then
-                t = t or {}
-                t[cdKey] = false
-            end
-        end
-        if t then p.trackedCds = t end
-    end
-    -- per-consumable tracking flags — whitelisted to CONSUMABLE_ORDER. Both booleans travel (unlike
-    -- trackedCds) because some consumables default OFF (elixirs), so an explicit `true` is meaningful.
+    -- (A `trackedCds` block sat here until v0.29, whitelisted to TRACKED_ORDER. The map went with the
+    -- per-cooldown toggle; a shared string carrying the old key simply drops it, since this function
+    -- copies only what it knows.)
+    -- per-consumable tracking flags — whitelisted to CONSUMABLE_ORDER. BOTH booleans travel, unlike the
+    -- curse map below, because some consumables default OFF (elixirs), so an explicit `true` is meaningful.
     if type(raw.trackedConsumes) == "table" then
         local t
         for _, key in ipairs(CONSUMABLE_ORDER) do
@@ -3275,8 +3260,8 @@ local function SanitizeProfile(raw)
         end
         if t then p.trackedConsumes = t end
     end
-    -- Per-curse tracking flags: whitelisted to CURSE_ORDER, only an explicit false (absent = tracked,
-    -- as with trackedCds), so a foreign string can't inject arbitrary keys.
+    -- Per-curse tracking flags: whitelisted to CURSE_ORDER, only an explicit false (absent = tracked),
+    -- so a foreign string can't inject arbitrary keys.
     if type(raw.trackedCurses) == "table" then
         local t
         for _, key in ipairs(CURSE_ORDER) do
