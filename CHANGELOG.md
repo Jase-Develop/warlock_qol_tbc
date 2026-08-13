@@ -14,9 +14,16 @@ All notable player-facing changes are listed here, newest first.
 - **Hide when no curses are active** now defaults **off**, so the HUD appears with a "No curses active"
   placeholder when you first walk into a raid. That is deliberate: a HUD that hides itself until a curse
   lands is one you cannot find in order to drag it where you want it. Tick the option once it is parked.
+- **Missing Consumables** now starts in **Transparent mode**, so you get the bare glowing icons rather
+  than a framed strip, matching how the Range Indicator has always started. Untick it on the page if you
+  prefer the frame. Note that with no frame there is no close X, so use **Show HUD** to put it away.
+- **Loss of Control**'s **Raid** announce toggle now starts **on**, so it matches Party and the two other
+  announcers. Worth remembering that both toggles only apply out in the open world: inside an instance
+  the announce is said out loud instead, so a raid night never touches raid chat either way.
+- The default **banish resisted** line gained its missing exclamation mark.
 - **None of this changes an existing setup.** These are the defaults for a new profile only, so if you
-  were already running the addon the Curse Tracker stays exactly as you left it, including switched off.
-  A **Hard Reset** or a brand new profile picks up the new defaults.
+  were already running the addon everything stays exactly as you left it, Curse Tracker included. A
+  **Hard Reset** or a brand new profile picks up the new defaults.
 
 ### [0.28] - 2026-08-04
 

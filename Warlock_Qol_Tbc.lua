@@ -26,7 +26,7 @@ local DEFAULT_SOULS_LINE = "Healthstones up — grab one! {square}"
 
 -- Banish announcer default lines: landed pool + resisted pool.
 local DEFAULT_BANISH_LINE        = "{targetName} has been banished!"
-local DEFAULT_BANISH_RESIST_LINE = "{targetName} banish resisted"
+local DEFAULT_BANISH_RESIST_LINE = "{targetName} banish resisted!"
 
 -- Soulstone announce keys off the CAST, matched by name (enUS, rank-agnostic).
 local SOULSTONE_SPELL_NAME = "Soulstone Resurrection"
@@ -201,7 +201,11 @@ local function InitProfile(p)
     if p.consumeShowRaid    == nil then p.consumeShowRaid    = true end
     if p.consumeShowParty   == nil then p.consumeShowParty   = false end
     if p.consumeGlow        == nil then p.consumeGlow        = true end   -- glow the missing icons
-    if p.consumeTransparent == nil then p.consumeTransparent = false end  -- hide HUD frame/header, icons only
+    -- consumeTransparent defaults ON since 0.29 (user call), matching rangeTransparent: bare icons read
+    -- better than a framed strip, and the frame stays mouse-enabled so it is still draggable. Caveat
+    -- carried over from the Range HUD: with no header there is no X, so closing it means the page's
+    -- Show HUD.
+    if p.consumeTransparent == nil then p.consumeTransparent = true  end  -- hide HUD frame/header, icons only
     if p.consumeThreshold   == nil then p.consumeThreshold   = 120  end
     if not p.trackedConsumes then p.trackedConsumes = {} end
     -- Range Indicator: manual on/off tool (default enabled here, but its HUD.open defaults OFF so
@@ -228,11 +232,12 @@ local function InitProfile(p)
     -- default on and controlCombatOnly filters out taxi flights and other harmless control loss.
     -- controlEcho prints the line to your own chat frame, so enabling the feature always does something
     -- visible even with no announce channel live.
-    -- DELIBERATE DIVERGENCE from the soulstone/banish pair (which both default on): controlRaidEnabled
-    -- defaults **OFF**. A raid is exactly where this spams: on a mass-fear mechanic every addon user
-    -- announces their own control loss at once, and the messages are obsolete before anyone reads them.
-    -- Raid is opt-in until the comms-aggregated version lands (see the 0.27 note in CLAUDE.md). Party
-    -- (a 5-man) stays on: at most a few people, and the announce is genuinely actionable there.
+    -- controlRaidEnabled defaults **ON** as of 0.29 (user call), so party and raid now match the
+    -- soulstone/banish pair. It shipped OFF in 0.26 on the reasoning that a mass-fear mechanic makes
+    -- every addon user announce at once, which is still true and still the argument for the aggregated
+    -- version. What changed is the weighting: the feature itself is off until switched on, so anyone
+    -- turning it on is opting into the whole thing, and these two toggles only bite OUT IN THE WORLD
+    -- anyway (inside an instance ControlChannel returns SAY), so a raid night never touches raid chat.
     if p.controlEnabled      == nil then p.controlEnabled      = false end
     -- Per-category announce flags, seeded from the table so adding a category needs no change here.
     -- ALL SIX default ON (user call 2026-08-03): the feature itself is off until switched on, so anyone
@@ -244,7 +249,7 @@ local function InitProfile(p)
         if p[cspec.flag] == nil then p[cspec.flag] = cspec.default end
     end
     if p.controlPartyEnabled == nil then p.controlPartyEnabled = true  end
-    if p.controlRaidEnabled  == nil then p.controlRaidEnabled  = false end
+    if p.controlRaidEnabled  == nil then p.controlRaidEnabled  = true  end
     if p.controlCombatOnly   == nil then p.controlCombatOnly   = true  end
     if p.controlEcho         == nil then p.controlEcho         = true  end
     -- Battlegrounds and arenas are silent unless asked for (default OFF): PvP is wall-to-wall crowd
