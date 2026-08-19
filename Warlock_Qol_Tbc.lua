@@ -64,12 +64,30 @@ local CONTROL_TYPE_ORDER = { "fear", "charm", "incap", "stun", "silence", "root"
 -- is the whole explanation for the 2026-08-03 report that deleting the fallback broke the feature (it
 -- broke FEARS specifically; stuns and roots kept working through the primary). If a category ever goes
 -- quiet again, check DebugDumpControl's UNMAPPED line before touching anything else.
+--
+-- The client's FULL vocabulary was enumerated in-game 2026-08-19 rather than guessed at, by scanning
+-- _G for LOSS_OF_CONTROL_DISPLAY_* (Blizzard resolves an entry's display text as
+-- _G["LOSS_OF_CONTROL_DISPLAY_"..locType], so each suffix IS a locType). That settled two things:
+-- FEAR and STUN are the ONLY types carrying a _MECHANIC twin, so the pairs rule above is now closed
+-- rather than open-ended; and half the vocabulary was going unmapped, which the additions below fix.
+--
+-- DELIBERATELY OMITTED, all present in the client, so do not "complete" the table with them:
+--   DAZE     - fires constantly from ordinary melee while running, and nobody can act on it. It would
+--              be the single noisiest announce in the addon for no benefit. Kept out on purpose.
+--   DISARM   - a warlock casts; losing a weapon costs nothing and there is no category it belongs to.
+--   DISTRACT, TAUNT, INVULNERABILITY, MAGICAL_IMMUNITY - not a loss of control of the player at all.
+--   SHACKLE_UNDEAD, TURN_UNDEAD - can only land on undead NPCs, never on the player.
 local CONTROL_LOC_TYPES = {
     FEAR    = "fear",    FEAR_MECHANIC = "fear",   HORROR = "fear",
     CHARM   = "charm",   POSSESS = "charm",
-    CONFUSE = "incap",   SLEEP   = "incap",   DISORIENT = "incap",
+    CONFUSE = "incap",   SLEEP   = "incap",   DISORIENT    = "incap", INCAPACITATE = "incap",
+    POLYMORPH = "incap", SAP     = "incap",   FREEZE       = "incap", CYCLONE      = "incap",
+    BANISH  = "incap",
     STUN    = "stun",    STUN_MECHANIC = "stun",
-    SILENCE = "silence", PACIFY  = "silence", PACIFYSILENCE = "silence", SCHOOL_INTERRUPT = "silence",
+    SILENCE = "silence", PACIFY  = "silence", PACIFYSILENCE = "silence",
+    -- SCHOOL_INTERRUPT and INTERRUPT_SCHOOL are two SEPARATE types in this client, not a typo for
+    -- each other. Only the first was mapped until 2026-08-19; the same near-twin trap as FEAR_MECHANIC.
+    SCHOOL_INTERRUPT = "silence", INTERRUPT_SCHOOL = "silence", INTERRUPT = "silence",
     ROOT    = "root",    SNARE   = "root",
 }
 

@@ -2,6 +2,20 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [Unreleased]
+
+#### Fixed
+- **Loss of Control missed a lot of what it was meant to catch.** It knew about fear, charm, sleep,
+  confuse, disorient, stun, silence, root and snare, and quietly ignored everything else the game
+  reports. So being **sheeped, sapped, frozen, cycloned, banished** or otherwise incapacitated
+  announced nothing at all, and a **kick or counterspell** did not count as a silence. All of those
+  now announce under the category you would expect, using the tick boxes already on the page.
+- **Fears now announce with their duration**, like stuns and roots always have. A fear was being
+  caught by the addon's older backup detection, which cannot see how long an effect lasts, because
+  the game reports some fears under a slightly different name that the addon did not recognise.
+- **Daze and disarm are deliberately still ignored.** Ordinary melee dazes you constantly while
+  running, and neither is something anyone else can help with, so announcing them would be noise.
+
 ### [0.29] - 2026-08-13
 
 #### Changed
