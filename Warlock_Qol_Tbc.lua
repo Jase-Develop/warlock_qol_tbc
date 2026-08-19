@@ -253,8 +253,14 @@ local function InitProfile(p)
     if p.curseShowParty    == nil then p.curseShowParty    = false end
     if p.curseHideInactive == nil then p.curseHideInactive = false end
     if not p.trackedCurses then p.trackedCurses = {} end
-    -- Loss of Control (BETA): same rule, the feature itself defaults OFF. Inside it both effect kinds
-    -- default on and controlCombatOnly filters out taxi flights and other harmless control loss.
+    -- Loss of Control (BETA): same rule, the feature itself defaults OFF, and every effect category
+    -- defaults on inside it. controlCombatOnly is now a pure NOISE preference: it was also serving as a
+    -- backstop against the old fallback path announcing taxi flights, and that path is gone, so a taxi
+    -- no longer reaches this feature at all (LOSS_OF_CONTROL_ADDED does not fire for one). The other
+    -- common out-of-combat control effects are unmapped by choice (DAZE above all), so what the filter
+    -- actually suppresses now is genuine CC landing before you are flagged: a sap, or a stealthed
+    -- opener. Worth revisiting: those are cases a player may well WANT announced, especially in a
+    -- heroic. Left ON for now pending a play-test with it off.
     -- controlEcho prints the line to your own chat frame, so enabling the feature always does something
     -- visible even with no announce channel live.
     -- controlRaidEnabled defaults **ON** as of 0.29 (user call), so party and raid now match the
