@@ -905,10 +905,17 @@ local function SayControl(cat, duration)
     return true
 end
 
--- PRIMARY detection. The event's payload differs across builds (some pass the index of the new entry,
--- some pass nothing), so the index is used when supplied and the active list is scanned for the newest
--- entry otherwise: either way this ends up with one normalised entry.
-local controlLocAt   = 0    -- GetTime() when this path last announced; tells the fallback to stand down
+-- Shared settling delay, used by BOTH paths. Three jobs now: it gives LOSS_OF_CONTROL_ADDED first
+-- refusal over the fallback (both events fire for the same effect and their order is not guaranteed,
+-- so a plain "has the primary run yet" check would lose the race); it lets the unit flags the filters
+-- read settle, since neither UnitOnTaxi nor UnitAffectingCombat is reliable at the instant the effect
+-- lands; and it is how long the primary waits for combat to flag before giving up on an effect that
+-- OPENED the fight. Imperceptible in play, so prefer raising it over shaving it.
+local CONTROL_BACKSTOP_DELAY = 0.5
+
+local controlLocAt   = 0    -- GetTime() when this path last CLAIMED an effect; tells the fallback to
+                            -- stand down. Stamped when the announce is merely deferred too, not only
+                            -- when it lands, so the guessing path cannot speak in the gap.
 local controlLocSeen = {}   -- locType strings this client reported that CONTROL_LOC_TYPES lacks
 
 -- Per-path OUTCOME log, read by DebugDumpControl. This replaced a bare locFired boolean, which was set
@@ -928,6 +935,33 @@ local controlLog = {
     fbFired  = 0, fbSaid  = 0, fbLast  = "never fired", fbCats  = {},
 }
 
+-- The announce tail of the primary path, factored out because the combat filter can reach it either
+-- immediately or from a deferred re-check (see the GOTCHA in the caller). `waited` only colours the
+-- log line, so a deferred announce is distinguishable from a prompt one when reading DebugDumpControl.
+local function AnnounceFromPrimary(cat, dur, waited)
+    controlLocAt = GetTime()
+    -- displayText is deliberately NOT passed on: the message is kept short (see ControlMessage).
+    local said, why = SayControl(cat, dur)
+    if said then
+        controlLog.locSaid = controlLog.locSaid + 1
+        controlLog.locCats[cat] = (controlLog.locCats[cat] or 0) + 1
+        -- Whether the entry carried a duration matters to the test: without one the primary emits the
+        -- same bare ">> Feared! <<" the fallback does, so the echo alone cannot tell the two apart.
+        controlLog.locLast = ("SAID %s%s%s"):format(cat,
+            (type(dur) == "number" and dur > 0) and (" (%ds)"):format(math.floor(dur + 0.5))
+                                                or " with NO duration (echo reads like the fallback)",
+            waited and " [after waiting for combat to flag]" or "")
+    else
+        -- Note the fallback still stands down here: controlLocAt is stamped by the caller before this
+        -- runs, so a category or PvP opt-out silences the announce outright rather than handing it to
+        -- the guessing path.
+        controlLog.locLast = ("%s reached SayControl but was suppressed: %s"):format(cat, why or "?")
+    end
+end
+
+-- PRIMARY detection. The event's payload differs across builds (some pass the index of the new entry,
+-- some pass nothing), so the index is used when supplied and the active list is scanned for the newest
+-- entry otherwise: either way this ends up with one normalised entry.
 local function OnLossOfControlAdded(index)
     if not FeatureOn("controlEnabled") then return end
     controlLog.locFired = controlLog.locFired + 1
@@ -958,41 +992,38 @@ local function OnLossOfControlAdded(index)
 
     -- No taxi filter here: a flight path is not a loss-of-control event, which is one of the reasons
     -- this path is preferred. The combat filter still applies, since it is a noise preference.
+    --
+    -- GOTCHA: the combat check DEFERS on failure, it does not drop. UnitAffectingCombat is not settled
+    -- at the instant the effect lands, so anything that OPENS a fight reads as out-of-combat here. This
+    -- cost the primary a real polymorph in-game (2026-08-19): it logged `incap dropped by
+    -- controlCombatOnly (not in combat yet)` while the fallback, whose filters all run late, announced
+    -- the same sheep 0.5s later as a guessed ">> Feared! <<" with no duration. The fallback had carried
+    -- a comment about this exact shape since 2026-08-01 and this path was still reading the flag early.
+    -- controlLocAt is stamped BEFORE deferring so the fallback stands down meanwhile: whichever way the
+    -- re-check goes, a correct silence beats a confident wrong guess.
     local p = ActiveProfile()
+    local dur = d.duration or d.timeRemaining
     if p and p.controlCombatOnly and not UnitAffectingCombat("player") then
-        controlLog.locLast = ("%s dropped by controlCombatOnly (not in combat yet)"):format(cat)
+        controlLocAt = GetTime()
+        C_Timer.After(CONTROL_BACKSTOP_DELAY, function()
+            if not UnitAffectingCombat("player") then
+                controlLog.locLast = ("%s dropped by controlCombatOnly (still not in combat %ss later)")
+                    :format(cat, CONTROL_BACKSTOP_DELAY)
+                return
+            end
+            AnnounceFromPrimary(cat, dur, true)
+        end)
         return
     end
 
     controlLocAt = GetTime()
-    local dur = d.duration or d.timeRemaining
-    -- displayText is deliberately NOT passed on: the message is kept short (see ControlMessage).
-    local said, why = SayControl(cat, dur)
-    if said then
-        controlLog.locSaid = controlLog.locSaid + 1
-        controlLog.locCats[cat] = (controlLog.locCats[cat] or 0) + 1
-        -- Whether the entry carried a duration matters to the test: without one the primary emits the
-        -- same bare ">> Feared! <<" the fallback does, so the echo alone cannot tell the two apart.
-        controlLog.locLast = ("SAID %s%s"):format(cat,
-            (type(dur) == "number" and dur > 0) and (" (%ds)"):format(math.floor(dur + 0.5))
-                                                or " with NO duration (echo reads like the fallback)")
-    else
-        -- Note the fallback still stands down here: controlLocAt is stamped above, so a category or
-        -- PvP opt-out silences the announce outright rather than handing it to the guessing path.
-        controlLog.locLast = ("%s reached SayControl but was suppressed: %s"):format(cat, why or "?")
-    end
+    AnnounceFromPrimary(cat, dur, false)
 end
 
 -- Transition latch. PLAYER_CONTROL_LOST can fire several times for one effect (chain fears; a
 -- druid's form changes fire it repeatedly), so only the EDGE into loss-of-control announces.
 -- Clearing this is the only reason PLAYER_CONTROL_GAINED is handled: it is never announced.
 local controlLost = false
-
--- How long the fallback waits before announcing. Two jobs: it gives LOSS_OF_CONTROL_ADDED first refusal
--- (both events fire for the same effect and their order is not guaranteed, so a plain "has the primary
--- run yet" check would lose the race), and it lets the unit flags the filters read settle. Imperceptible
--- in play, so prefer raising it over shaving it.
-local CONTROL_BACKSTOP_DELAY = 0.5
 
 local function OnControlLost()
     if controlLost then return end

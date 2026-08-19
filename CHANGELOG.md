@@ -13,6 +13,12 @@ All notable player-facing changes are listed here, newest first.
 - **Fears now announce with their duration**, like stuns and roots always have. A fear was being
   caught by the addon's older backup detection, which cannot see how long an effect lasts, because
   the game reports some fears under a slightly different name that the addon did not recognise.
+- **Crowd control that starts a fight is no longer announced wrongly.** With **Only while in combat**
+  ticked, anything that opened the fight (a sheep or a fear landing before you were flagged) fell
+  through to the addon's older backup detection, which announced it as a generic **"Feared!"** with no
+  duration whatever it actually was. The game simply had not registered you as in combat yet. The
+  addon now gives that a moment to settle, so a sheep that starts a fight reads **"Incapacitated!"**
+  with its real duration, and genuinely out-of-combat effects stay silent as before.
 - **Daze and disarm are deliberately still ignored.** Ordinary melee dazes you constantly while
   running, and neither is something anyone else can help with, so announcing them would be noise.
 
