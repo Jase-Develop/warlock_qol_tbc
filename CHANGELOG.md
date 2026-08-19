@@ -2,44 +2,43 @@
 
 All notable player-facing changes are listed here, newest first.
 
-### [Unreleased]
+### [0.30] - 2026-08-19
+
+Loss of Control (still **beta**) got a lot more accurate. It now tells you **what** hit you.
 
 #### Changed
-- **Loss of Control announces now name the effect where the game tells us what it was.** Being sheeped
-  reads **"Polymorphed! (10s)"** rather than the general "Incapacitated!", and a counterspell reads
-  "Interrupted!". Where the game only reports the broad kind of effect, the announce reads as it always
-  did, so it is never less informative than before. Note this is as specific as the game gets: effects
-  that work the same way share a name, so a gouge and a repentance both still read "Incapacitated!".
-- **A real mind control now says so.** The game describes both a priest's Mind Control and a
-  succubus's Seduction with the same word, "Charmed", because mechanically they are the same kind of
-  effect. They are not the same problem for your group, so a genuine mind control reads
-  **"Mind controlled!"** and a seduction reads **"Charmed!"**.
-- **The tick boxes on the page have not changed**, and that is deliberate: **Incapacitate** is the
-  honest name for the switch that governs sheep, gouge, repentance and hibernate together. Only the
-  announced message got more specific.
+- **Announces name the effect.** A sheep reads **"Polymorphed! (10s)"** instead of the general
+  "Incapacitated!", and a counterspell reads **"Interrupted!"**. Where the game only reports the broad
+  kind of effect the wording is unchanged, so a line is never less informative than before. This is as
+  specific as the game gets: effects that work the same way share a name, so a gouge and a repentance
+  both still read "Incapacitated!".
+- **A real mind control says so.** The game calls both a priest's Mind Control and a succubus's
+  Seduction "Charmed", since mechanically they are the same kind of effect. They are not the same
+  problem for your group, so a mind control now reads **"Mind controlled!"** and a seduction
+  **"Charmed!"**.
+- **The tick boxes have not changed**, deliberately: **Incapacitate** is the honest name for the switch
+  governing sheep, gouge, repentance and hibernate together. Only the message got more specific.
 
 #### Fixed
-- **Loss of Control missed a lot of what it was meant to catch.** It knew about fear, charm, sleep,
-  confuse, disorient, stun, silence, root and snare, and quietly ignored everything else the game
-  reports. So being **sheeped, sapped, frozen, cycloned, banished** or otherwise incapacitated
-  announced nothing at all, and a **kick or counterspell** did not count as a silence. All of those
-  now announce under the category you would expect, using the tick boxes already on the page.
-- **Fears now announce with their duration**, like stuns and roots always have. A fear was being
-  caught by the addon's older backup detection, which cannot see how long an effect lasts, because
-  the game reports some fears under a slightly different name that the addon did not recognise.
-- **Crowd control that starts a fight is no longer announced wrongly.** With **Only while in combat**
-  ticked, anything that opened the fight (a sheep or a fear landing before you were flagged) fell
-  through to the addon's older backup detection, which announced it as a generic **"Feared!"** with no
-  duration whatever it actually was. The game simply had not registered you as in combat yet. The
-  addon now gives that a moment to settle, so a sheep that starts a fight reads **"Incapacitated!"**
-  with its real duration, and genuinely out-of-combat effects stay silent as before.
-- **Loss of Control detection is now a single path, and a more accurate one.** The addon used to run a
-  backup detector alongside the main one, for effects the main one might miss. That backup could not
-  tell what had actually hit you, so whenever it was the one to speak it said **"Feared!"** regardless
-  and never showed a duration. Every category has now been confirmed working through the main
-  detection, so the backup is gone and announces always name the real effect with its real duration.
-- **Daze and disarm are deliberately still ignored.** Ordinary melee dazes you constantly while
-  running, and neither is something anyone else can help with, so announcing them would be noise.
+- **A lot more is caught.** Being **sheeped, sapped, frozen, cycloned or banished** announced nothing
+  at all before, and a **kick or counterspell** did not count as a silence. All of them now announce
+  under the tick box you would expect.
+- **Fears announce with their duration**, like stuns and roots always have.
+- **Crowd control that starts a fight is announced properly.** With **Only while in combat** ticked,
+  anything that opened the fight used to be announced as a generic "Feared!" with no duration, whatever
+  it really was, because the game had not registered you as in combat yet. Some effects, silences
+  especially, were dropped entirely. That is fixed, and the announce is quicker than it was.
+- **Detection is now a single, more accurate path.** A backup detector used to run alongside the main
+  one for anything it might miss, but it could not tell what had actually hit you and said "Feared!"
+  regardless. Everything is now confirmed working through the main detection, so it is gone.
+
+#### Notes
+- **Sap needs "Only while in combat" turned off.** A rogue can only sap you out of combat and the sap
+  does not put you in combat, so with that option ticked (the default) it is never announced. Untick it
+  on the Loss of Control page if you want saps called out, which is worth it in a heroic and in PvP.
+  Whether that option should stay on by default is under review for a later version.
+- **Daze and disarm stay ignored on purpose.** Ordinary melee dazes you constantly while running, and
+  neither is something anyone else can help with, so announcing them would just be noise.
 
 ### [0.29] - 2026-08-13
 
