@@ -806,18 +806,30 @@ local function LossOfControlCount()
     return 0
 end
 
--- Build the announce text: ">> Stunned! (4s) <<". The label names WHAT HAPPENED (from the event's
--- locType, not a guess), and the duration tells the group whether it is worth reacting to. Kept SHORT
--- deliberately (user call 2026-08-01): this is read at a glance by someone mid-fight, so the effect's
--- own name (C_LossOfControl's displayText, e.g. "War Stomp") is NOT included even though we have it.
--- The duration is optional and the format degrades to just ">> Stunned! <<" without it, for an entry
--- that does not carry one.
+-- Build the announce text: ">> Polymorphed! (10s) <<". Read at a glance by someone mid-fight, so it is
+-- kept SHORT deliberately (user call 2026-08-01): what happened, and how long, and nothing else.
+--
+-- `effect` is the event's displayText and is PREFERRED over the category label when present, falling
+-- back to the label otherwise, so the line is never less informative than it used to be. Added
+-- 2026-08-19 on the user's request, reversing the original call to drop displayText entirely: that call
+-- was made believing displayText was the SPELL name (documented here as 'e.g. "War Stomp"'), which
+-- would have been noise. The real samples disproved it - polymorph gives "Polymorphed", mind control
+-- "Charmed", counterspell "Interrupted" - i.e. past participles in exactly the register of our own
+-- labels, so it reads as a more specific label rather than as an addition.
+--
+-- GOTCHA: this is MECHANIC-level detail, not spell-level, so do not promise the user more than it
+-- gives. Polymorph reports locType=CONFUSE with displayText=Polymorphed, so displayText is keyed off
+-- something finer than locType, but effects SHARING a mechanic still share a string: gouge and
+-- repentance are both expected to read plainly "Incapacitated". The CATEGORY TOGGLES on the page stay
+-- general for the same reason (user call: "incapacitate" is the honest name for a switch that governs
+-- sheep, gouge, repentance and hibernate alike) - only this message gets specific.
 --
 -- The >> << brackets replaced {skull} raid marker tokens, which rendered as an icon in chat but showed
 -- as raw "{skull}" text in the local echo. Plain characters read identically in both.
-local function ControlMessage(cat, duration)
+local function ControlMessage(cat, duration, effect)
     local spec  = CONTROL_TYPES[cat]
-    local label = (spec and spec.label) or "Out of control"
+    local label = (type(effect) == "string" and effect ~= "" and effect)
+                  or (spec and spec.label) or "Out of control"
     local secs  = (type(duration) == "number" and duration > 0) and math.floor(duration + 0.5) or nil
 
     if secs then return (">> %s! (%ds) <<"):format(label, secs) end
@@ -846,15 +858,15 @@ end
 -- gate on it too. Both count as an instance to ControlChannel above, so without the opt-out this
 -- would /say through a whole BG.)
 
--- Announce one loss of control. `cat` is a CONTROL_TYPES key; `duration` comes from C_LossOfControl and
--- may still be absent on an entry that does not carry one (see ControlMessage, which degrades to a
--- bare label).
+-- Announce one loss of control. `cat` is a CONTROL_TYPES key; `duration` and `effect` (the event's
+-- displayText) both come from C_LossOfControl and either may be absent on a given entry, in which case
+-- ControlMessage degrades to the duration-less form and to the category label respectively.
 -- Returns true when the message was actually emitted (to chat, to the local echo, or both), so the
 -- caller can log whether IT was the path that spoke rather than merely the path that ran. On a bail it
 -- returns false plus the REASON as text: the detection paths put that straight into their log, because
 -- "suppressed" without a reason is useless when several separate gates can produce it.
 local controlRecent = {}   -- category -> GetTime() of the last announce
-local function SayControl(cat, duration)
+local function SayControl(cat, duration, effect)
     if not FeatureOn("controlEnabled") then return false, "feature or master switch off" end
     local p    = ActiveProfile()
     local spec = CONTROL_TYPES[cat]
@@ -892,7 +904,7 @@ local function SayControl(cat, duration)
     end
     controlRecent[cat] = now
 
-    local msg = ControlMessage(cat, duration)
+    local msg = ControlMessage(cat, duration, effect)
     if channel then SendChatMessage(msg, channel) end
 
     -- Local echo of exactly what was sent (or would have been, when solo). Now literally identical to
@@ -922,11 +934,10 @@ local controlLog = {
 }
 
 -- The announce tail, factored out because the combat filter can reach it either immediately or from
--- the poll below. `waited` is the seconds actually spent waiting for combat to
--- flag, and only colours the log line, so a delayed announce is legible as such in DebugDumpControl.
-local function AnnounceControl(cat, dur, waited)
-    -- displayText is deliberately NOT passed on: the message is kept short (see ControlMessage).
-    local said, why = SayControl(cat, dur)
+-- the poll below. `waited` is the seconds actually spent waiting for combat to flag, and only colours
+-- the log line, so a delayed announce is legible as such in DebugDumpControl.
+local function AnnounceControl(cat, dur, effect, waited)
+    local said, why = SayControl(cat, dur, effect)
     if said then
         controlLog.locSaid = controlLog.locSaid + 1
         controlLog.locCats[cat] = (controlLog.locCats[cat] or 0) + 1
@@ -952,9 +963,9 @@ local CONTROL_COMBAT_POLL  = 0.1
 local CONTROL_COMBAT_TRIES = 5    -- x CONTROL_COMBAT_POLL = a 0.5s window
 
 local WaitForCombat
-WaitForCombat = function(cat, dur, tries)
+WaitForCombat = function(cat, dur, effect, tries)
     if UnitAffectingCombat("player") then
-        AnnounceControl(cat, dur, tries * CONTROL_COMBAT_POLL)
+        AnnounceControl(cat, dur, effect, tries * CONTROL_COMBAT_POLL)
         return
     end
     if tries >= CONTROL_COMBAT_TRIES then
@@ -962,7 +973,7 @@ WaitForCombat = function(cat, dur, tries)
             :format(cat, CONTROL_COMBAT_TRIES * CONTROL_COMBAT_POLL)
         return
     end
-    C_Timer.After(CONTROL_COMBAT_POLL, function() WaitForCombat(cat, dur, tries + 1) end)
+    C_Timer.After(CONTROL_COMBAT_POLL, function() WaitForCombat(cat, dur, effect, tries + 1) end)
 end
 
 -- Detection. The event's payload differs across builds (some pass the index of the new entry, some
@@ -1007,12 +1018,15 @@ local function OnLossOfControlAdded(index)
     -- check-and-return.
     local p = ActiveProfile()
     local dur = d.duration or d.timeRemaining
+    -- displayText names the effect more precisely than our category does (see ControlMessage), so it is
+    -- carried through to the message rather than dropped here as it used to be.
+    local effect = d.displayText
     if p and p.controlCombatOnly and not UnitAffectingCombat("player") then
-        WaitForCombat(cat, dur, 0)
+        WaitForCombat(cat, dur, effect, 0)
         return
     end
 
-    AnnounceControl(cat, dur, 0)
+    AnnounceControl(cat, dur, effect, 0)
 end
 
 -- ── Public say + macro helpers ──────────────────────────────────────────────────
@@ -2986,7 +3000,10 @@ end
 -- say path is blocked by design and you should see nothing, inside an instance it should appear as a
 -- bubble. Bypasses the combat filter, but not the feature's own flags.
 -- `cat` is any CONTROL_TYPES key (fear / charm / incap / stun / silence / root), defaulting to fear.
--- A sample duration is passed so the message reads like a real detection rather than a bare label.
+-- A sample duration is passed so the message reads like a real detection. NO effect name is passed,
+-- since there is no real entry to read one from, so this prints the CATEGORY LABEL form (">> Feared!
+-- (8s) <<"). A real detection carrying displayText would name the effect instead (">> Polymorphed!
+-- ..."), so do not read this as proof of what a live announce looks like: it tests the CHANNEL.
 function WQ.DebugSayControl(cat)
     cat = CONTROL_TYPES[cat] and cat or "fear"
     if not ControlActive() then

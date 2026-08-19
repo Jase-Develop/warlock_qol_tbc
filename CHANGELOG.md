@@ -4,6 +4,16 @@ All notable player-facing changes are listed here, newest first.
 
 ### [Unreleased]
 
+#### Changed
+- **Loss of Control announces now name the effect where the game tells us what it was.** Being sheeped
+  reads **"Polymorphed! (10s)"** rather than the general "Incapacitated!", and a counterspell reads
+  "Interrupted!". Where the game only reports the broad kind of effect, the announce reads as it always
+  did, so it is never less informative than before. Note this is as specific as the game gets: effects
+  that work the same way share a name, so a gouge and a repentance both still read "Incapacitated!".
+- **The tick boxes on the page have not changed**, and that is deliberate: **Incapacitate** is the
+  honest name for the switch that governs sheep, gouge, repentance and hibernate together. Only the
+  announced message got more specific.
+
 #### Fixed
 - **Loss of Control missed a lot of what it was meant to catch.** It knew about fear, charm, sleep,
   confuse, disorient, stun, silence, root and snare, and quietly ignored everything else the game
