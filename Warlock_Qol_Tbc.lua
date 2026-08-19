@@ -749,24 +749,25 @@ end
 -- ── Loss of Control announcer (BETA) ─────────────────────────────────────────
 -- TWO detection paths, deliberately, because only one of them is confirmed to work on 2.5.6:
 --
--- PRIMARY: LOSS_OF_CONTROL_ADDED via C_LossOfControl. The namespace is confirmed PRESENT on this client
--- (probed in-game 2026-07-30) and each entry carries locType / displayText / duration, so the announce
--- can NAME the effect and say how long it lasts instead of guessing between two fixed strings. It also
--- reaches stuns, silences and roots, which the fallback below is structurally blind to, and it needs no
--- taxi filter (a flight path is not a loss-of-control event).
+-- Detection is LOSS_OF_CONTROL_ADDED via C_LossOfControl, and as of 2026-08-19 that is the ONLY path.
+-- Each entry carries locType / displayText / duration, so the announce NAMES the effect and says how
+-- long it lasts, and it reaches every category including stuns, silences and roots. It needs no taxi
+-- filter either: a flight path is not a loss-of-control event, so it stays silent there by itself.
 --
--- FALLBACK: PLAYER_CONTROL_LOST, a vanilla-era event that fires whenever the player cannot drive their
--- own character (fear, charm, mind control, taxi). It carries NO payload, so it can only report that
--- SOMETHING took the wheel: the category is guessed from UnitIsCharmed, and anything that is neither a
--- charm nor a fear is mislabelled "Feared!". It is kept ONLY because C_LossOfControl EXISTING on 2.5.6
--- does not prove LOSS_OF_CONTROL_ADDED FIRES there, and a silently dead announcer would be worse than a
--- roughly-labelled one.
+-- HISTORY, because it explains the shape of the code below and cost two sessions to establish. A second
+-- path (PLAYER_CONTROL_LOST) rode alongside this one from v0.26. It carried NO payload, so it could
+-- only guess the category from UnitIsCharmed and mislabelled anything that was neither a charm nor a
+-- fear as "Feared!". It existed because C_LossOfControl EXISTING on 2.5.6 did not prove
+-- LOSS_OF_CONTROL_ADDED FIRES here. Deleting it on 2026-08-03 broke a working feature and was reverted;
+-- the cause, found only once the paths were instrumented to count what each one SAID rather than what
+-- it saw, was a missing FEAR_MECHANIC entry in CONTROL_LOC_TYPES that made this path silently drop
+-- every fear. With that fixed, all six categories were confirmed announcing from here in-game
+-- (fear, charm via POSSESS, incap via CONFUSE, stun, silence via SCHOOL_INTERRUPT, root), the fallback
+-- recorded zero announces across every clean run, and it was removed.
 --
--- The two are coordinated so they can never both announce: the primary fires immediately and stamps
--- controlLocAt, the fallback waits CONTROL_BACKSTOP_DELAY and stands down if that stamp is fresh.
--- DELETE THE LOSING PATH ONLY ON `said > 0` IN DebugDumpControl's controlLog lines, NEVER on the
--- weaker "the event fired" reading: doing exactly that on 2026-08-03 broke a working feature and had
--- to be reverted. See the controlLog comment for the four ways the primary can fire and still not speak.
+-- THE LESSON, which is why the controlLog instrumentation stays: "the event fired" is not evidence the
+-- announce anyone saw came from it. If a category ever goes quiet, read DebugDumpControl's `said`
+-- counters and its UNMAPPED locType line before concluding anything about the detection path.
 
 -- Accessor shim for C_LossOfControl. The namespace is present but WHICH accessor it carries is not
 -- known: retail 9.0+ exposes GetActiveLossOfControlData(i) returning a table, older builds exposed
@@ -803,8 +804,8 @@ end
 -- locType, not a guess), and the duration tells the group whether it is worth reacting to. Kept SHORT
 -- deliberately (user call 2026-08-01): this is read at a glance by someone mid-fight, so the effect's
 -- own name (C_LossOfControl's displayText, e.g. "War Stomp") is NOT included even though we have it.
--- The duration is optional and the format degrades to just ">> Stunned! <<" without it, which is what
--- the payload-free fallback path always produces.
+-- The duration is optional and the format degrades to just ">> Stunned! <<" without it, for an entry
+-- that does not carry one.
 --
 -- The >> << brackets replaced {skull} raid marker tokens, which rendered as an icon in chat but showed
 -- as raw "{skull}" text in the local echo. Plain characters read identically in both.
@@ -839,17 +840,9 @@ end
 -- gate on it too. Both count as an instance to ControlChannel above, so without the opt-out this
 -- would /say through a whole BG.)
 
--- FALLBACK-PATH ONLY category guess: "charm" when something else is driving (charm / mind control /
--- possession), else "fear". Existence-guarded like the other version shims. This is the guess the
--- primary path exists to replace: with no payload to read, anything that is neither a charm nor a fear
--- comes out as "Feared!". Never call it from the C_LossOfControl path, which knows the real answer.
-local function ControlKindGuess()
-    if UnitIsCharmed and UnitIsCharmed("player") then return "charm" end
-    return "fear"
-end
-
--- Announce one loss of control. `cat` is a CONTROL_TYPES key; duration comes from C_LossOfControl on
--- the primary path and is nil on the fallback (see ControlMessage, which degrades to a bare label).
+-- Announce one loss of control. `cat` is a CONTROL_TYPES key; `duration` comes from C_LossOfControl and
+-- may still be absent on an entry that does not carry one (see ControlMessage, which degrades to a
+-- bare label).
 -- Returns true when the message was actually emitted (to chat, to the local echo, or both), so the
 -- caller can log whether IT was the path that spoke rather than merely the path that ran. On a bail it
 -- returns false plus the REASON as text: the detection paths put that straight into their log, because
@@ -905,63 +898,70 @@ local function SayControl(cat, duration)
     return true
 end
 
--- Shared settling delay, used by BOTH paths. Three jobs now: it gives LOSS_OF_CONTROL_ADDED first
--- refusal over the fallback (both events fire for the same effect and their order is not guaranteed,
--- so a plain "has the primary run yet" check would lose the race); it lets the unit flags the filters
--- read settle, since neither UnitOnTaxi nor UnitAffectingCombat is reliable at the instant the effect
--- lands; and it is how long the primary waits for combat to flag before giving up on an effect that
--- OPENED the fight. Imperceptible in play, so prefer raising it over shaving it.
-local CONTROL_BACKSTOP_DELAY = 0.5
-
-local controlLocAt   = 0    -- GetTime() when this path last CLAIMED an effect; tells the fallback to
-                            -- stand down. Stamped when the announce is merely deferred too, not only
-                            -- when it lands, so the guessing path cannot speak in the gap.
 local controlLocSeen = {}   -- locType strings this client reported that CONTROL_LOC_TYPES lacks
 
--- Per-path OUTCOME log, read by DebugDumpControl. This replaced a bare locFired boolean, which was set
--- at the top of the primary handler and so only ever proved the EVENT arrived, never that it produced
--- an announce. On 2026-08-03 a locFired=YES reading was taken as grounds to delete the fallback and
--- that broke a feature the user had working: the primary can arrive and then bail four separate ways
--- (no data, unmapped locType, the combat filter, SayControl's own gates), leaving the fallback as what
--- actually spoke. So count what each path SAID, not what it saw, and keep the last outcome as text.
--- Whichever path shows said > 0 after a real loss of control is the one doing the work.
+-- OUTCOME log, read by DebugDumpControl. This replaced a bare locFired boolean, which was set at the
+-- top of the handler and so only ever proved the EVENT arrived, never that it produced an announce.
+-- Reading that boolean as proof cost a working feature on 2026-08-03 (see the history note above): the
+-- handler can arrive and then bail four separate ways (no data, unmapped locType, the combat filter,
+-- SayControl's own gates). So count what it SAID, not what it saw, and keep the last outcome as text.
+-- It survives the second path's removal because that distinction is what makes a quiet category
+-- diagnosable at all.
 --
--- locCats / fbCats tally announces PER CATEGORY, because locLast/fbLast are a single slot: in a busy
--- pull the interesting event is overwritten by whatever lands next (a fear disappearing behind a stun
--- is exactly the case this test has to catch). A category that announced even once stays on the record
--- against the path that claimed it.
+-- locCats tallies announces PER CATEGORY, because locLast is a single slot: in a busy pull the
+-- interesting event is overwritten by whatever lands next (a fear disappearing behind a stun is exactly
+-- the case this had to catch). A category that announced even once stays on the record.
 local controlLog = {
     locFired = 0, locSaid = 0, locLast = "never fired", locCats = {},
-    fbFired  = 0, fbSaid  = 0, fbLast  = "never fired", fbCats  = {},
 }
 
--- The announce tail of the primary path, factored out because the combat filter can reach it either
--- immediately or from a deferred re-check (see the GOTCHA in the caller). `waited` only colours the
--- log line, so a deferred announce is distinguishable from a prompt one when reading DebugDumpControl.
-local function AnnounceFromPrimary(cat, dur, waited)
-    controlLocAt = GetTime()
+-- The announce tail, factored out because the combat filter can reach it either immediately or from
+-- the poll below. `waited` is the seconds actually spent waiting for combat to
+-- flag, and only colours the log line, so a delayed announce is legible as such in DebugDumpControl.
+local function AnnounceControl(cat, dur, waited)
     -- displayText is deliberately NOT passed on: the message is kept short (see ControlMessage).
     local said, why = SayControl(cat, dur)
     if said then
         controlLog.locSaid = controlLog.locSaid + 1
         controlLog.locCats[cat] = (controlLog.locCats[cat] or 0) + 1
-        -- Whether the entry carried a duration matters to the test: without one the primary emits the
-        -- same bare ">> Feared! <<" the fallback does, so the echo alone cannot tell the two apart.
+        -- Whether the entry carried a duration is worth recording: an effect that announces without
+        -- one is a candidate for a CONTROL_LOC_TYPES or payload quirk rather than a normal detection.
         controlLog.locLast = ("SAID %s%s%s"):format(cat,
             (type(dur) == "number" and dur > 0) and (" (%ds)"):format(math.floor(dur + 0.5))
-                                                or " with NO duration (echo reads like the fallback)",
-            waited and " [after waiting for combat to flag]" or "")
+                                                or " with NO duration",
+            (waited and waited > 0) and (" [%.1fs late, waited for combat to flag]"):format(waited) or "")
     else
-        -- Note the fallback still stands down here: controlLocAt is stamped by the caller before this
-        -- runs, so a category or PvP opt-out silences the announce outright rather than handing it to
-        -- the guessing path.
         controlLog.locLast = ("%s reached SayControl but was suppressed: %s"):format(cat, why or "?")
     end
 end
 
--- PRIMARY detection. The event's payload differs across builds (some pass the index of the new entry,
--- some pass nothing), so the index is used when supplied and the active list is scanned for the newest
--- entry otherwise: either way this ends up with one normalised entry.
+-- Combat has not flagged yet, but the effect may be what STARTS the fight (see the GOTCHA in the
+-- caller), so POLL for it rather than sleeping a fixed spell and announcing visibly late. A flat 0.5s
+-- wait was tried first and the lag was noticeable in play (reported 2026-08-19). Polling fixes that
+-- without shortening the window: a normal opener flags within a tick or two and announces almost
+-- immediately, while a slow flag keeps the full tolerance before we give up. Shorten the POLL if it
+-- still feels late; shorten the WINDOW only if you are willing to drop genuine fight-openers again,
+-- which is the bug this whole branch exists to fix.
+local CONTROL_COMBAT_POLL  = 0.1
+local CONTROL_COMBAT_TRIES = 5    -- x CONTROL_COMBAT_POLL = a 0.5s window
+
+local WaitForCombat
+WaitForCombat = function(cat, dur, tries)
+    if UnitAffectingCombat("player") then
+        AnnounceControl(cat, dur, tries * CONTROL_COMBAT_POLL)
+        return
+    end
+    if tries >= CONTROL_COMBAT_TRIES then
+        controlLog.locLast = ("%s dropped by controlCombatOnly (still not in combat %.1fs later)")
+            :format(cat, CONTROL_COMBAT_TRIES * CONTROL_COMBAT_POLL)
+        return
+    end
+    C_Timer.After(CONTROL_COMBAT_POLL, function() WaitForCombat(cat, dur, tries + 1) end)
+end
+
+-- Detection. The event's payload differs across builds (some pass the index of the new entry, some
+-- pass nothing), so the index is used when supplied and the active list is scanned for the newest entry
+-- otherwise: either way this ends up with one normalised entry.
 local function OnLossOfControlAdded(index)
     if not FeatureOn("controlEnabled") then return end
     controlLog.locFired = controlLog.locFired + 1
@@ -977,8 +977,8 @@ local function OnLossOfControlAdded(index)
     end
     if not d then
         -- The accessor resolved but handed back nothing usable, and the scan found no active entry
-        -- either. This is the shape that would look like a working primary while the fallback did all
-        -- the talking, so it gets its own outcome rather than a silent return.
+        -- either. It gets its own outcome rather than a silent return, because this is the shape that
+        -- looks like working detection while nothing is ever announced.
         controlLog.locLast = "NO DATA (accessor and active-list scan both empty)"
         return
     end
@@ -990,88 +990,23 @@ local function OnLossOfControlAdded(index)
         return
     end
 
-    -- No taxi filter here: a flight path is not a loss-of-control event, which is one of the reasons
-    -- this path is preferred. The combat filter still applies, since it is a noise preference.
+    -- No taxi filter needed: a flight path is not a loss-of-control event, so this stays silent on one
+    -- by itself. The combat filter still applies, since it is a noise preference rather than a bug fix.
     --
-    -- GOTCHA: the combat check DEFERS on failure, it does not drop. UnitAffectingCombat is not settled
-    -- at the instant the effect lands, so anything that OPENS a fight reads as out-of-combat here. This
-    -- cost the primary a real polymorph in-game (2026-08-19): it logged `incap dropped by
-    -- controlCombatOnly (not in combat yet)` while the fallback, whose filters all run late, announced
-    -- the same sheep 0.5s later as a guessed ">> Feared! <<" with no duration. The fallback had carried
-    -- a comment about this exact shape since 2026-08-01 and this path was still reading the flag early.
-    -- controlLocAt is stamped BEFORE deferring so the fallback stands down meanwhile: whichever way the
-    -- re-check goes, a correct silence beats a confident wrong guess.
+    -- GOTCHA: the combat check POLLS on failure, it does not drop. UnitAffectingCombat is not settled
+    -- at the instant the effect lands, so anything that OPENS a fight reads as out-of-combat here. That
+    -- dropped a real polymorph and a real counterspell in-game (2026-08-19), each logged as
+    -- `dropped by controlCombatOnly (not in combat yet)`, and for silences it meant total silence,
+    -- since the old second path could never see those at all. Do not "simplify" this back to a plain
+    -- check-and-return.
     local p = ActiveProfile()
     local dur = d.duration or d.timeRemaining
     if p and p.controlCombatOnly and not UnitAffectingCombat("player") then
-        controlLocAt = GetTime()
-        C_Timer.After(CONTROL_BACKSTOP_DELAY, function()
-            if not UnitAffectingCombat("player") then
-                controlLog.locLast = ("%s dropped by controlCombatOnly (still not in combat %ss later)")
-                    :format(cat, CONTROL_BACKSTOP_DELAY)
-                return
-            end
-            AnnounceFromPrimary(cat, dur, true)
-        end)
+        WaitForCombat(cat, dur, 0)
         return
     end
 
-    controlLocAt = GetTime()
-    AnnounceFromPrimary(cat, dur, false)
-end
-
--- Transition latch. PLAYER_CONTROL_LOST can fire several times for one effect (chain fears; a
--- druid's form changes fire it repeatedly), so only the EDGE into loss-of-control announces.
--- Clearing this is the only reason PLAYER_CONTROL_GAINED is handled: it is never announced.
-local controlLost = false
-
-local function OnControlLost()
-    if controlLost then return end
-    controlLost = true
-    if not FeatureOn("controlEnabled") then return end
-    controlLog.fbFired = controlLog.fbFired + 1
-
-    -- GOTCHA: EVERY filter is evaluated LATE, inside the delayed callback, never here. The unit flags
-    -- they read are not settled at the instant PLAYER_CONTROL_LOST fires: checking UnitOnTaxi at this
-    -- point read FALSE while boarding a flight, so a taxi ride announced "Feared!" (reported in-game
-    -- 2026-08-01, with controlCombatOnly off so the combat filter was not covering for it). Combat is
-    -- the same shape in reverse: a fear that starts the fight may not have flagged you in combat yet.
-    -- If a taxi ever leaks through again, raise CONTROL_BACKSTOP_DELAY rather than adding a filter.
-    local function fire()
-        -- Stand down if C_LossOfControl already announced this effect: it NAMED it, we would only
-        -- repeat it worse. Everything this path can say is a guess (see ControlKindGuess).
-        if (GetTime() - controlLocAt) < 1 then
-            controlLog.fbLast = "stood down (the primary path had just announced)"
-            return
-        end
-        -- Taxi flights fire this event too and are never worth saying out loud. The primary path needs
-        -- no equivalent: a taxi is not a loss-of-control event there, which is why it stayed silent.
-        if UnitOnTaxi and UnitOnTaxi("player") then
-            controlLog.fbLast = "dropped: on a taxi"
-            return
-        end
-        -- Anything that fears or charms you has already put you in combat, so this filter costs no real
-        -- detections while removing the remaining harmless cases (a flight path, a shapeshift).
-        local p = ActiveProfile()
-        if p and p.controlCombatOnly and not UnitAffectingCombat("player") then
-            controlLog.fbLast = "dropped by controlCombatOnly (not in combat)"
-            return
-        end
-        local cat = ControlKindGuess()
-        local said, why = SayControl(cat)
-        if said then
-            controlLog.fbSaid = controlLog.fbSaid + 1
-            controlLog.fbCats[cat] = (controlLog.fbCats[cat] or 0) + 1
-            controlLog.fbLast = ("SAID %s (a guess: this path has no payload to read)"):format(cat)
-        else
-            controlLog.fbLast = ("%s reached SayControl but was suppressed: %s"):format(cat, why or "?")
-        end
-    end
-    if C_Timer and C_Timer.After then C_Timer.After(CONTROL_BACKSTOP_DELAY, fire) else fire() end
-end
-
-local function OnControlGained()
-    controlLost = false
+    AnnounceControl(cat, dur, 0)
 end
 
 -- ── Public say + macro helpers ──────────────────────────────────────────────────
@@ -1891,7 +1826,7 @@ local eventFrame = CreateFrame("Frame")
 local UpdateCombatLogRegistration   -- shared combat-log listener (soulstone + banish + tracker + curses)
 local UpdateTrackerRegistration     -- Raid CD Tracker listeners (comms + roster)
 local UpdateCursesRegistration      -- Curse Tracker listeners (zone change, for auto-show)
-local UpdateControlRegistration     -- Loss of Control listeners (PLAYER_CONTROL_LOST/GAINED)
+local UpdateControlRegistration     -- Loss of Control listener (LOSS_OF_CONTROL_ADDED)
 
 eventFrame:RegisterEvent("ADDON_LOADED")           -- an addon finished loading
 eventFrame:RegisterEvent("PLAYER_LOGIN")           -- UI (incl. chat) ready
@@ -2062,18 +1997,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
 
     elseif event == "LOSS_OF_CONTROL_ADDED" then
-        -- Primary detection: the entry carries locType / displayText / duration, so the announce can
-        -- name the effect. The arg is the new entry's index on the builds that pass one.
+        -- The entry carries locType / displayText / duration, so the announce can name the effect.
+        -- The arg is the new entry's index on the builds that pass one.
         OnLossOfControlAdded(...)
-
-    elseif event == "PLAYER_CONTROL_LOST" then
-        -- Fallback only. No payload: this event says nothing but "you are not driving any more".
-        -- OnControlLost does the filtering (taxi, combat), waits for the primary path to have its say,
-        -- and only then guesses the category.
-        OnControlLost()
-
-    elseif event == "PLAYER_CONTROL_GAINED" then
-        OnControlGained()
 
     elseif event == "PLAYER_REGEN_ENABLED" then
         -- Left combat: whatever we were fighting is now dead, despawned, evaded or reset, so any curse
@@ -2132,25 +2058,20 @@ UpdateCursesRegistration = function()
     end
 end
 
--- The Loss of Control announcer owns all three of its events outright: nothing else in the addon listens
--- for them, so unlike the shared PLAYER_ENTERING_WORLD (see UpdateWorldRegistration) plain
--- register/unregister pairs are safe here. Turning the feature on also clears the transition latch, so a
--- latch stranded by a missed PLAYER_CONTROL_GAINED can be cleared without a /reload.
+-- The Loss of Control announcer owns its event outright: nothing else in the addon listens for
+-- LOSS_OF_CONTROL_ADDED, so unlike the shared PLAYER_ENTERING_WORLD (see UpdateWorldRegistration) a
+-- plain register/unregister pair is safe here.
 local function ControlActive() return FeatureOn("controlEnabled") end
 
 UpdateControlRegistration = function()
     if ControlActive() then
-        controlLost = false
-        eventFrame:RegisterEvent("PLAYER_CONTROL_LOST")
-        eventFrame:RegisterEvent("PLAYER_CONTROL_GAINED")
         -- pcall because RegisterEvent RAISES on an event name the client does not know. C_LossOfControl
-        -- is present on 2.5.6 so this should hold, but a wrong guess here must not break the fallback.
+        -- is present on 2.5.6 and the event is confirmed firing here, so this should always hold; the
+        -- guard stays because there is no longer a second path to carry the feature if it ever did not.
         if C_LossOfControl then
             pcall(eventFrame.RegisterEvent, eventFrame, "LOSS_OF_CONTROL_ADDED")
         end
     else
-        eventFrame:UnregisterEvent("PLAYER_CONTROL_LOST")
-        eventFrame:UnregisterEvent("PLAYER_CONTROL_GAINED")
         pcall(eventFrame.UnregisterEvent, eventFrame, "LOSS_OF_CONTROL_ADDED")
     end
 end
@@ -2964,7 +2885,7 @@ function WQ.SetControlPvpEnabled(on) local p = ActiveProfile(); if p then p.cont
 
 -- Per-context party/raid announce toggles, read by GroupAnnounceChannel("control"). Same contract as
 -- the soulstone/banish pairs: default ON, nil/absent counts as on, and the setters just persist (the
--- two PLAYER_CONTROL_* listeners stay keyed off controlEnabled alone).
+-- detection listener stays keyed off controlEnabled alone).
 function WQ.IsControlPartyEnabled()
     local p = ActiveProfile(); return p ~= nil and p.controlPartyEnabled ~= false
 end
@@ -2979,17 +2900,16 @@ function WQ.SetControlRaidEnabled(on)
 end
 
 -- Debug dump (/run Warlock_Qol_Tbc.DebugDumpControl()): feature state, the live unit state the filters
--- read, which of the two detection paths this client can actually use, and any locType it has reported
--- that CONTROL_LOC_TYPES does not map. This is the readout the in-game test is built around, and the
--- ONE question it exists to answer is WHICH PATH ACTUALLY ANNOUNCES here (the two controlLog lines
--- below). It used to ask only whether LOSS_OF_CONTROL_ADDED fires, which is a weaker question that
--- read as a green light and cost a working feature; see the controlLog comment.
+-- read, whether the C_LossOfControl accessor resolved, the fired/said counters, and any locType this
+-- client has reported that CONTROL_LOC_TYPES does not map. It was built to answer which of two
+-- detection paths actually announced; that question is settled and the second path is gone, but the
+-- counters stay, because `said` (not "the event fired") is the only reading that has ever been safe to
+-- act on here, and the UNMAPPED line is how a quiet category names its own cause.
 function WQ.DebugDumpControl()
     local p = ActiveProfile()
-    print(("|cff9900ffWarlockQol|r Loss of Control - active: %s, channel: %s, latched: %s"):format(
+    print(("|cff9900ffWarlockQol|r Loss of Control - active: %s, channel: %s"):format(
         ControlActive() and "yes" or "no",
-        ControlChannel() or "none (solo, or that context is off): echo only",
-        controlLost and "yes" or "no"))
+        ControlChannel() or "none (solo, or that context is off): echo only"))
     -- The channel above hinges on this: SAY is only permitted to an addon inside an instance.
     print(("  inInstance=%s (say is instance-only; outside it falls back to party/raid)"):format(
         IsInInstance() and "yes" or "no"))
@@ -3008,28 +2928,25 @@ function WQ.DebugDumpControl()
         tostring(WQ.IsControlPartyEnabled()), tostring(WQ.IsControlRaidEnabled()),
         tostring(WQ.IsControlPvpEnabled()),
         p and tostring(p.controlCombatOnly) or "?", p and tostring(p.controlEcho) or "?"))
-    print(("  now: inCombat=%s onTaxi=%s charmed=%s -> fallback would guess %s"):format(
+    -- inCombat is the one that matters: it gates the announce, and the handler polls for it rather
+    -- than reading it once (see WaitForCombat), so a `dropped ... still not in combat` outcome below
+    -- means it never flagged at all, not that it was merely late.
+    print(("  now: inCombat=%s onTaxi=%s charmed=%s"):format(
         UnitAffectingCombat("player") and "yes" or "no",
         (UnitOnTaxi and UnitOnTaxi("player")) and "yes" or "no",
-        (UnitIsCharmed and UnitIsCharmed("player")) and "yes" or "no",
-        ControlKindGuess()))
+        (UnitIsCharmed and UnitIsCharmed("player")) and "yes" or "no"))
 
     -- Which accessor the shim resolved to. "none" with C_LossOfControl=yes means the namespace exists
-    -- but carries neither known accessor, and the primary path can never produce data.
+    -- but carries neither known accessor, and detection can never produce data at all.
     local C = C_LossOfControl
     local accessor = "none"
     if C and C.GetActiveLossOfControlData then accessor = "GetActiveLossOfControlData (retail 9.0+ shape)"
     elseif C and C.GetEventInfo           then accessor = "GetEventInfo (legacy shape)" end
-    print(("  API: UnitIsCharmed=%s C_LossOfControl=%s accessor=%s"):format(
-        UnitIsCharmed and "yes" or "no", C and "yes" or "no", accessor))
+    print(("  API: C_LossOfControl=%s accessor=%s"):format(C and "yes" or "no", accessor))
     -- fired counts arrivals, said counts announces, and only the second one settles anything: an event
-    -- can arrive and still bail four ways before it speaks (see controlLog). Get hit by ONE effect with
-    -- the feature on, then read these two lines: the path with said>0 is the live one, and the loser is
-    -- the one to delete. Both at said>0 for a single effect would mean the stand-down handshake failed.
-    print(("  primary  (C_LossOfControl):     fired=%d said=%d  last: %s"):format(
+    -- can arrive and still bail four ways before it speaks (see controlLog). `last` names which one.
+    print(("  detection (C_LossOfControl): fired=%d said=%d  last: %s"):format(
         controlLog.locFired, controlLog.locSaid, controlLog.locLast))
-    print(("  fallback (PLAYER_CONTROL_LOST): fired=%d said=%d  last: %s"):format(
-        controlLog.fbFired, controlLog.fbSaid, controlLog.fbLast))
 
     -- The durable half of the record: `last` above is one slot and gets overwritten, so a fear that
     -- announced once and was then buried under a pull's worth of stuns only survives here.
@@ -3040,8 +2957,7 @@ function WQ.DebugDumpControl()
         end
         return out or "(none)"
     end
-    print(("  said by category: primary [%s]  fallback [%s]"):format(
-        CategoryTally(controlLog.locCats), CategoryTally(controlLog.fbCats)))
+    print(("  said by category: %s"):format(CategoryTally(controlLog.locCats)))
     print(("  activeEntries=%d"):format(LossOfControlCount()))
 
     for i = 1, LossOfControlCount() do
@@ -3062,10 +2978,9 @@ end
 -- a false pass, because typing the command and pressing Enter IS a hardware event, and that alone is
 -- enough to let a SAY through anywhere. WHERE you run this is now part of the test: in the world the
 -- say path is blocked by design and you should see nothing, inside an instance it should appear as a
--- bubble. Bypasses the transition latch and the taxi/combat filters, but not the feature's own flags.
+-- bubble. Bypasses the combat filter, but not the feature's own flags.
 -- `cat` is any CONTROL_TYPES key (fear / charm / incap / stun / silence / root), defaulting to fear.
--- The sample effect name and duration are passed so the message reads like a real one from the primary
--- path rather than the bare fallback string.
+-- A sample duration is passed so the message reads like a real detection rather than a bare label.
 function WQ.DebugSayControl(cat)
     cat = CONTROL_TYPES[cat] and cat or "fear"
     if not ControlActive() then

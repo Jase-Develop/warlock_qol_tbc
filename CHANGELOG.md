@@ -19,6 +19,11 @@ All notable player-facing changes are listed here, newest first.
   duration whatever it actually was. The game simply had not registered you as in combat yet. The
   addon now gives that a moment to settle, so a sheep that starts a fight reads **"Incapacitated!"**
   with its real duration, and genuinely out-of-combat effects stay silent as before.
+- **Loss of Control detection is now a single path, and a more accurate one.** The addon used to run a
+  backup detector alongside the main one, for effects the main one might miss. That backup could not
+  tell what had actually hit you, so whenever it was the one to speak it said **"Feared!"** regardless
+  and never showed a duration. Every category has now been confirmed working through the main
+  detection, so the backup is gone and announces always name the real effect with its real duration.
 - **Daze and disarm are deliberately still ignored.** Ordinary melee dazes you constantly while
   running, and neither is something anyone else can help with, so announcing them would be noise.
 
