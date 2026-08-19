@@ -10,6 +10,10 @@ All notable player-facing changes are listed here, newest first.
   "Interrupted!". Where the game only reports the broad kind of effect, the announce reads as it always
   did, so it is never less informative than before. Note this is as specific as the game gets: effects
   that work the same way share a name, so a gouge and a repentance both still read "Incapacitated!".
+- **A real mind control now says so.** The game describes both a priest's Mind Control and a
+  succubus's Seduction with the same word, "Charmed", because mechanically they are the same kind of
+  effect. They are not the same problem for your group, so a genuine mind control reads
+  **"Mind controlled!"** and a seduction reads **"Charmed!"**.
 - **The tick boxes on the page have not changed**, and that is deliberate: **Incapacitate** is the
   honest name for the switch that governs sheep, gouge, repentance and hibernate together. Only the
   announced message got more specific.

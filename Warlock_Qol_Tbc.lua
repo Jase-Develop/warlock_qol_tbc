@@ -91,6 +91,26 @@ local CONTROL_LOC_TYPES = {
     ROOT    = "root",    SNARE   = "root",
 }
 
+-- locType -> announce wording, overriding the event's displayText where the client's own word is
+-- misleading. Deliberately SEPARATE from CONTROL_LOC_TYPES above, which maps a locType onto a CATEGORY
+-- (i.e. onto a toggle): this table is about WORDING ONLY and changes nothing about what is announced.
+--
+-- Why it exists: displayText is the spell's MECHANIC string, not a description of the situation (the
+-- observed samples match WoW's mechanic names exactly - Charmed, Polymorphed, Interrupted). A priest's
+-- Mind Control and a succubus's Seduction share the mechanic "Charmed", so the client calls both of
+-- them "Charmed" and a genuine mind control announced as ">> Charmed! <<" - wrong, since being driven
+-- by another player is not the same event as being seduced, and the group reacts differently. locType
+-- DOES separate them: POSSESS is someone driving you, CHARM is a seduction. So POSSESS is reworded and
+-- CHARM is left alone, where its displayText is already right.
+--
+-- Both stay in the ONE `charm` category on purpose (user call 2026-08-19): a player who wants to hear
+-- about a mind control wants to hear about a seduction too, so splitting the toggle would add a switch
+-- nobody would ever set differently. If a future locType needs different wording, add it here rather
+-- than inventing a category for it.
+local CONTROL_LOC_LABELS = {
+    POSSESS = "Mind controlled",
+}
+
 local CONTROL_THROTTLE = 3   -- seconds; block a dup announce per category if the latch never clears
 
 -- True if a combat-log unit's affiliation is mine/party/raid (ignore nearby strangers).
@@ -1019,8 +1039,9 @@ local function OnLossOfControlAdded(index)
     local p = ActiveProfile()
     local dur = d.duration or d.timeRemaining
     -- displayText names the effect more precisely than our category does (see ControlMessage), so it is
-    -- carried through to the message rather than dropped here as it used to be.
-    local effect = d.displayText
+    -- carried through to the message rather than dropped here as it used to be. CONTROL_LOC_LABELS wins
+    -- over it where the client's own wording is misleading (see that table: POSSESS reads "Charmed").
+    local effect = CONTROL_LOC_LABELS[d.locType] or d.displayText
     if p and p.controlCombatOnly and not UnitAffectingCombat("player") then
         WaitForCombat(cat, dur, effect, 0)
         return
