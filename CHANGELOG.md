@@ -2,6 +2,30 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.31] - 2026-08-25
+
+Loss of Control is out of beta, and it now speaks up for crowd control that starts a fight.
+
+#### Changed
+- **Loss of Control is no longer beta.** It moved out of the **Beta** menu section and now sits under
+  **Party/Raid** with the other announcers, between Banish and Consumables. The **Beta** section has gone
+  with it, as that was the last page in it. Everything the label was warning about has now been tested
+  in-game: it speaks up properly inside an instance, the battleground/arena opt-in behaves itself, and
+  the announce lands in a real group.
+- With that, it starts up like the Soulstone and Banish announcers instead of switched off: the feature
+  is **on**, with all six effect categories ticked.
+- **"Only while in combat" now starts off**, so crowd control that lands before a fight begins is
+  announced. The case that matters is a **rogue's sap**: it can only land out of combat and it does not
+  put you in combat, so it was never announced at all before. Stealth openers and the sneaking assassins
+  in Shadow Labyrinth and Shattered Halls are the same story. A session with it off turned up nothing
+  unwanted, which fits: flight paths do not reach this feature, and being dazed is ignored on purpose.
+  Tick it on the Loss of Control page if you would rather only hear about crowd control mid-fight.
+- The page's note on that option used to give a flight path as its example. That stopped being true in
+  0.30, when the old backup detection was removed, so it now says what the option actually costs you.
+- **Your existing settings carry over.** If Loss of Control is switched off for you, or you have "Only
+  while in combat" ticked, it stays that way: the new defaults only apply to a brand new profile. Change
+  them on the page, or use Hard Reset to start over.
+
 ### [0.30] - 2026-08-19
 
 Loss of Control (still **beta**) got a lot more accurate. It now tells you **what** hit you.
