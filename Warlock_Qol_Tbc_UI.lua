@@ -2435,10 +2435,10 @@ do
     curse.OnPageShow = WQ.SyncCursesPage
 end
 
--- ── Loss of Control page (Beta) ────────────────────────────────────────────────
+-- ── Loss of Control page ──────────────────────────────────────────────────────
 -- Settings only, and the addon's first feature with no HUD and no editable lines: the messages are built
 -- in the core from the effect's own name and duration, so this page is nothing but toggles. Header toggle
--- drives controlEnabled, which is OFF by default like every beta feature. Body = party/raid announce
+-- drives controlEnabled, ON by default since 0.31 took this out of beta. Body = party/raid announce
 -- toggles (which only bite out in the world: inside an instance the announce goes to /say), the
 -- per-category effect grid built from CONTROL_TYPE_ORDER, then the noise filters.
 do
@@ -2538,8 +2538,12 @@ do
         function() return WQ.IsControlCombatOnly() end, function(v) WQ.SetControlCombatOnly(v) end)
     CheckRow("Print to my own chat frame", -264,
         function() return WQ.IsControlEcho() end, function(v) WQ.SetControlEcho(v) end)
-    Caption("\"Only while in combat\" filters out the harmless cases the game reports the same way, " ..
-            "such as a flight path.", -292)
+    -- STALE CAPTION FIXED IN 0.31: this used to say the filter screened out "harmless cases ... such as
+    -- a flight path", which was true only of the old fallback detection path deleted in 0.30. A taxi
+    -- does not fire LOSS_OF_CONTROL_ADDED at all, so what the box really costs you now is real CC that
+    -- lands before you are flagged. It defaults OFF as of 0.31 for that reason.
+    Caption("\"Only while in combat\" skips crowd control that lands before a fight starts, " ..
+            "such as a rogue's sap.", -292)
 
     function WQ.SyncControlPage()
         syncControlToggles()
@@ -2766,11 +2770,10 @@ do
         { header = "PARTY/RAID" },
         { label = "Soulstone",              page = "soulstone"    },
         { label = "Banish",                 page = "banish"       },
+        { label = "Loss of Control",        page = "control"      },
         { label = "Consumables",            page = "consumables"  },
         { label = "Curses",                 page = "curses"       },
         { label = "Range Indicator",        page = "range"        },
-        { header = "BETA" },
-        { label = "Loss of Control",        page = "control"      },
         { header = "SETTINGS" },
         { label = "Settings",               page = "settings"  },
         { label = "Profiles",               page = "profiles"  },

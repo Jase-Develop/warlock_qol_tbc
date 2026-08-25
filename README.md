@@ -12,17 +12,16 @@ one-click macros the addon generates for you. WarlockQol is **dependency-free**.
 - **Ritual of Souls** - a plain line said in `/say` when cast.
 - **Soulstone Announcement** - auto-announces to party/raid when a soulstone is cast in your group. Quiet in battlegrounds and arenas unless you opt in.
 - **Banish Announcement** - announces your own banishes (separate landed & resisted pools, automatic rank suffix). Same battleground/arena opt-in.
+- **Loss of Control** - announces when you lose control of your character (fear, mind control,
+  incapacitate, stun, silence, root), naming the effect and how long it lasts, so the people around you
+  know you are not driving. Said out loud inside an instance, sent to party/raid out in the world. Needs
+  no spell list, so nothing needs updating as you meet new bosses. Same battleground/arena opt-in.
 - **Cooldown Tracker** - a movable HUD showing each party/raid warlock's tracked cooldown (Ready / live countdown).
 - **Missing Consumables** - a movable HUD flagging missing or soon-to-expire raid consumables.
 - **Curse Tracker** - a movable HUD listing the curses your group's warlocks have out on any mob:
   who cast it, the target and its raid marker, which curse, and the time remaining. Auto-shows when you
   enter a raid.
 - **Range Indicator** - a movable text HUD showing your current target's name and your distance to it as a yard range.
-- **Loss of Control** *(beta)* - announces when you lose control of your character (fear, mind control,
-  incapacitate, stun, silence, root), naming the effect and how long it lasts, so the people around you
-  know you are not driving. Said out loud inside an instance, sent to party/raid out in the world. Needs
-  no spell list, so nothing needs updating as you meet new bosses. Off by default; turn it on under the
-  **Beta** section.
 - **Profiles** - per-character config profiles, with copy and share-by-string export/import.
 
 Chat lines support WoW raid target markers (`{star}`, `{skull}`, …) via a quick-insert row.

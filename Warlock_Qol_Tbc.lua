@@ -33,7 +33,7 @@ local SOULSTONE_SPELL_NAME = "Soulstone Resurrection"
 local SOULSTONE_THROTTLE   = 3   -- seconds; block a duplicate announce for the same target
 local DEFAULT_SOULSTONE_LINE = "A {circle} soulstone {circle} has been cast on {targetName}"
 
--- Loss of Control (BETA) announce categories. Data-driven like CURSES / CONSUMABLES / TRACKED_COOLDOWNS:
+-- Loss of Control announce categories. Data-driven like CURSES / CONSUMABLES / TRACKED_COOLDOWNS:
 -- adding one is a data edit. Per entry:
 --   label    the word the announce leads with ("Feared!", "Mind controlled!")
 --   option   the checkbox label on the config page (the effect, not the state)
@@ -273,23 +273,21 @@ local function InitProfile(p)
     if p.curseShowParty    == nil then p.curseShowParty    = false end
     if p.curseHideInactive == nil then p.curseHideInactive = false end
     if not p.trackedCurses then p.trackedCurses = {} end
-    -- Loss of Control (BETA): same rule, the feature itself defaults OFF, and every effect category
-    -- defaults on inside it. controlCombatOnly is now a pure NOISE preference: it was also serving as a
-    -- backstop against the old fallback path announcing taxi flights, and that path is gone, so a taxi
-    -- no longer reaches this feature at all (LOSS_OF_CONTROL_ADDED does not fire for one). The other
-    -- common out-of-combat control effects are unmapped by choice (DAZE above all), so what the filter
-    -- actually suppresses now is genuine CC landing before you are flagged: a sap, or a stealthed
-    -- opener. Worth revisiting: those are cases a player may well WANT announced, especially in a
-    -- heroic. Left ON for now pending a play-test with it off.
+    -- Loss of Control: OUT OF BETA as of 0.31, so it now seeds like the soulstone/banish announcers
+    -- (feature ON) rather than opt-in. The three things that held it in beta are all done: the instance
+    -- /say path, the BG/Arena toggle in a real battleground, and the announce landing in a real group
+    -- were each confirmed in-game 2026-08-25, on top of detection having been settled in 0.30.
+    -- GOTCHA: none of this reaches an existing profile. Those already store an explicit false from the
+    -- beta build, and InitProfile only ever seeds a nil, so a current user keeps the feature switched
+    -- off until they tick it or hard-reset. Same rule that bit the Curse Tracker graduating in 0.29.
     -- controlEcho prints the line to your own chat frame, so enabling the feature always does something
     -- visible even with no announce channel live.
     -- controlRaidEnabled defaults **ON** as of 0.29 (user call), so party and raid now match the
     -- soulstone/banish pair. It shipped OFF in 0.26 on the reasoning that a mass-fear mechanic makes
     -- every addon user announce at once, which is still true and still the argument for the aggregated
-    -- version. What changed is the weighting: the feature itself is off until switched on, so anyone
-    -- turning it on is opting into the whole thing, and these two toggles only bite OUT IN THE WORLD
-    -- anyway (inside an instance ControlChannel returns SAY), so a raid night never touches raid chat.
-    if p.controlEnabled      == nil then p.controlEnabled      = false end
+    -- version. What changed is the weighting: these two toggles only bite OUT IN THE WORLD anyway
+    -- (inside an instance ControlChannel returns SAY), so a raid night never touches raid chat.
+    if p.controlEnabled      == nil then p.controlEnabled      = true  end
     -- Per-category announce flags, seeded from the table so adding a category needs no change here.
     -- ALL SIX default ON (user call 2026-08-03): the feature itself is off until switched on, so anyone
     -- who turns it on is opting into the whole thing, and a category they do not want is one click away.
@@ -301,7 +299,18 @@ local function InitProfile(p)
     end
     if p.controlPartyEnabled == nil then p.controlPartyEnabled = true  end
     if p.controlRaidEnabled  == nil then p.controlRaidEnabled  = true  end
-    if p.controlCombatOnly   == nil then p.controlCombatOnly   = true  end
+    -- controlCombatOnly defaults **OFF** as of 0.31, reversing the 0.26 default. It is a pure NOISE
+    -- preference now: it was partly a backstop against the old fallback path announcing taxi flights,
+    -- and that path went in 0.30, so a taxi does not reach this feature at all (LOSS_OF_CONTROL_ADDED
+    -- never fires for one). Nothing accidental is left for it to catch either: DAZE, the commonest
+    -- out-of-combat control effect in the game, is one of the six deliberately unmapped locTypes, and
+    -- BG/arena spam is gated separately by controlPvpEnabled. What it DOES suppress is genuine CC
+    -- landing before you are flagged, which is worth hearing: a rogue's sap (which by definition only
+    -- lands out of combat and does not itself start it, so it was un-announceable by construction), a
+    -- world-PvP stealth opener, and the stealthed assassins in Shadow Labyrinth and Shattered Halls.
+    -- Confirmed by a play-test with it off (2026-08-25): nothing unwanted fired. Kept as a toggle
+    -- rather than deleted, since announce volume is a taste call.
+    if p.controlCombatOnly   == nil then p.controlCombatOnly   = false end
     if p.controlEcho         == nil then p.controlEcho         = true  end
     -- Battlegrounds and arenas are silent unless asked for (default OFF): PvP is wall-to-wall crowd
     -- control, so the announce fires constantly and says nothing anyone can act on. Worse, a BG/arena
@@ -772,9 +781,7 @@ local function SaySouls()
     end
 end
 
--- ── Loss of Control announcer (BETA) ─────────────────────────────────────────
--- TWO detection paths, deliberately, because only one of them is confirmed to work on 2.5.6:
---
+-- ── Loss of Control announcer ─────────────────────────────────────────────────
 -- Detection is LOSS_OF_CONTROL_ADDED via C_LossOfControl, and as of 2026-08-19 that is the ONLY path.
 -- Each entry carries locType / displayText / duration, so the announce NAMES the effect and says how
 -- long it lasts, and it reaches every category including stuns, silences and roots. It needs no taxi
@@ -2875,11 +2882,11 @@ function WQ.DebugDumpCurses()
     end
 end
 
--- ── Loss of Control public API (BETA) ─────────────────────────────────────────
+-- ── Loss of Control public API ─────────────────────────────────────────────────
 
 function WQ.IsControlActive() return ControlActive() end
 
--- Enabled flag (per-profile, default OFF: beta). Setter re-syncs the two listeners.
+-- Enabled flag (per-profile, default ON since 0.31 took this out of beta). Setter re-syncs the listener.
 function WQ.IsControlEnabled() local p = ActiveProfile(); return p and p.controlEnabled or false end
 function WQ.SetControlEnabled(on)
     local p = ActiveProfile()
