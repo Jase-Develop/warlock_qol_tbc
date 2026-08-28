@@ -2,6 +2,34 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.32] - 2026-08-28
+
+Housekeeping. The addon has a proper icon in the game's AddOn list, and the install instructions no
+longer describe steps that cannot work.
+
+#### Added
+- **An icon in the AddOn list.** WarlockQol showed a plain question mark beside its name on the AddOns
+  screen. It now uses the same Subjugate Demon artwork as the minimap button and the window's title
+  bar, so it is easy to pick out of a long list. Nothing extra is bundled to do this: it uses artwork
+  already in the game.
+
+#### Fixed
+- **The install-from-source steps could not work.** They told you to move a `Warlock_Qol_Tbc` folder
+  out of a download, but a download gives you a lowercase folder with the files loose inside it and no
+  such folder to move. Followed literally they left you with an addon that loaded and then quietly did
+  nothing at all, because the addon checks its own folder name exactly. The steps now tell you to name
+  the folder `Warlock_Qol_Tbc` yourself. This only ever affected installing from source. The CurseForge
+  download, and anything installed through WowUp, were always correct.
+
+#### Notes
+- **The README now links to CurseForge**, which is the recommended way to install and what WowUp
+  follows. It also covers three things that were in the addon but never written down: the cooldown
+  HUD's second section listing who currently has a soulstone (and that ctrl+clicking a row announces
+  it), what Missing Consumables actually tracks and the fact that it hides itself when nothing needs
+  attention, and the accent colour and backdrop opacity settings.
+- **Phase 3 did not change the game client**, which is still 2.5.6, so this release needs no
+  compatibility update.
+
 ### [0.31] - 2026-08-25
 
 Loss of Control is out of beta, and it now speaks up for crowd control that starts a fight.
