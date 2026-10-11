@@ -1289,7 +1289,7 @@ end
 do
     local summon = NewPage("summon", "Demon Summoning",
         "Add individual summoning lines to each demon, a random line is said in /say when the cast begins.",
-        { get = WQ.IsPetEnabled, set = WQ.SetPetEnabled })
+        { get = WQ.IsSummonEnabled, set = WQ.SetSummonEnabled })
 
     local selectedFamily = "Succubus"
 
@@ -1349,9 +1349,9 @@ do
             local prof = WQ.ActiveProfile()
             return prof and prof.lines[selectedFamily]
         end,
-        add    = function(text) return WQ.AddLine(selectedFamily, text) end,
-        update = function(idx, text) return WQ.UpdateLine(selectedFamily, idx, text) end,
-        delete = function(idx)  WQ.DeleteLine(selectedFamily, idx) end,
+        add    = function(text) return WQ.AddSummonLine(selectedFamily, text) end,
+        update = function(idx, text) return WQ.UpdateSummonLine(selectedFamily, idx, text) end,
+        delete = function(idx)  WQ.DeleteSummonLine(selectedFamily, idx) end,
         placeholders = { "{demonName}" },
         help1  = "|cff8788eeUse |r|cffaaaaaa{demonName}|r|cff8788ee as a placeholder for your demon's name|r",
     })
@@ -1372,7 +1372,7 @@ do
     end
 
     summon.OnPageShow = refreshSummon
-    WQ.RefreshUI = refreshSummon   -- so the core can refresh us after UNIT_PET detects a pet name
+    WQ.RefreshSummonPage = refreshSummon   -- so the core can refresh us after UNIT_PET detects a pet name
 end
 
 -- ── Ritual of Summoning page ──────────────────────────────────────────────────
@@ -1654,7 +1654,7 @@ do
     })
 
     -- The HUD's visibility pass calls this after the X or an auto-show moves its open flag, so the
-    -- Show HUD box stays in step. Checkboxes only, like WQ.SyncTrackerPage.
+    -- Show HUD box stays in step. Checkboxes only, like WQ.SyncCooldownsPage.
     function WQ.SyncSoulstoneTab()
         for _, sync in ipairs(hudSyncers) do sync() end
     end
@@ -2072,7 +2072,7 @@ end
 do
     local cd = NewPage("cooldowns", "Cooldowns",
         "A HUD of every spell and item cooldown you have running.",
-        { get = WQ.IsTrackerEnabled, set = WQ.SetTrackerEnabled })
+        { get = WQ.IsCooldownsEnabled, set = WQ.SetCooldownsEnabled })
 
     local PAD_L, WRAP = 8, -16
     -- The shared checkbox column grid every settings page uses (8 / 140 / 272).
@@ -2131,24 +2131,24 @@ do
             "Group soulstones have a HUD of their own, set up on the Announcements > Soulstone tab.", -26)
     -- Two rows: what the HUD shows (Show HUD, Exclude pet CDs), then when it opens on its own.
     CheckRow("Show HUD", -66,
-        function() return WQ.IsTrackerHUDOpen() end, function(v) WQ.SetTrackerHUDOpen(v) end, COL1)
+        function() return WQ.IsCooldownsHUDOpen() end, function(v) WQ.SetCooldownsHUDOpen(v) end, COL1)
     CheckRow("Exclude pet CDs", -66,
-        function() return WQ.IsCooldownHidePet() end, function(v) WQ.SetCooldownHidePet(v) end, COL2)
+        function() return WQ.IsCooldownsHidePet() end, function(v) WQ.SetCooldownsHidePet(v) end, COL2)
     CheckRow("Auto-show in raid", -94,
-        function() return WQ.IsTrackerShowRaid() end,
+        function() return WQ.IsCooldownsShowRaid() end,
         function(v)
-            WQ.SetTrackerShowRaid(v)
+            WQ.SetCooldownsShowRaid(v)
             -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
-            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetTrackerHUDOpen(true) end
+            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetCooldownsHUDOpen(true) end
         end, COL1)
     CheckRow("Auto-show in party", -94,
-        function() return WQ.IsTrackerShowParty() end,
+        function() return WQ.IsCooldownsShowParty() end,
         function(v)
-            WQ.SetTrackerShowParty(v)
+            WQ.SetCooldownsShowParty(v)
             -- Enabling while already in a party dungeon won't hit a transition, so open the HUD now.
-            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetTrackerHUDOpen(true) end
+            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetCooldownsHUDOpen(true) end
         end, COL2)
-    pageSyncers[#pageSyncers + 1] = MakeOpacityRow(cd, PAD_L, -126, WQ.GetTrackerOpacity, WQ.SetTrackerOpacity)
+    pageSyncers[#pageSyncers + 1] = MakeOpacityRow(cd, PAD_L, -126, WQ.GetCooldownsOpacity, WQ.SetCooldownsOpacity)
 
     Rule(-158)
 
@@ -2175,10 +2175,10 @@ do
     minUnit:SetPoint("LEFT", minBox, "RIGHT", 8, 0)
     minUnit:SetText("seconds")
 
-    local function RefreshMinBox() minBox:SetText(tostring(WQ.GetCooldownMinDuration())) end
+    local function RefreshMinBox() minBox:SetText(tostring(WQ.GetCooldownsMinDuration())) end
     local function CommitMin()
         local v = tonumber(minBox:GetText())
-        if v then WQ.SetCooldownMinDuration(v) end
+        if v then WQ.SetCooldownsMinDuration(v) end
         RefreshMinBox()   -- reflect the stored (clamped) value
     end
     minBox:SetScript("OnEnterPressed", function(self) CommitMin(); self:ClearFocus() end)
@@ -2205,12 +2205,12 @@ do
     -- Re-sync the checkboxes. Kept under its old name because the HUD's X button and visibility pass
     -- call it to keep "Show HUD" in step. Checkboxes ONLY: it runs on roster and zone changes too, and
     -- re-syncing the minimum box from there would wipe a value mid-type.
-    function WQ.SyncTrackerPage()
+    function WQ.SyncCooldownsPage()
         for _, sync in ipairs(checkSyncers) do sync() end
     end
 
     cd.OnPageShow = function()   -- header toggle synced by ShowPage
-        WQ.SyncTrackerPage()
+        WQ.SyncCooldownsPage()
         for _, sync in ipairs(pageSyncers) do sync() end
         refreshExcludes()
     end
@@ -2281,25 +2281,25 @@ do
     Heading("HUD", -6)
     Caption("Auto-hides when nothing is missing.", -26)
     CheckRow("Show HUD", -50,
-        function() return WQ.IsConsumeHUDOpen() end, function(v) WQ.SetConsumeHUDOpen(v) end)
+        function() return WQ.IsConsumablesHUDOpen() end, function(v) WQ.SetConsumablesHUDOpen(v) end)
     CheckRow("Auto-show in raid", -50,
-        function() return WQ.IsConsumeShowRaid() end,
+        function() return WQ.IsConsumablesShowRaid() end,
         function(v)
-            WQ.SetConsumeShowRaid(v)
+            WQ.SetConsumablesShowRaid(v)
             -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
-            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetConsumeHUDOpen(true) end
+            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetConsumablesHUDOpen(true) end
         end, COL2)
     CheckRow("Auto-show in party", -50,
-        function() return WQ.IsConsumeShowParty() end,
+        function() return WQ.IsConsumablesShowParty() end,
         function(v)
-            WQ.SetConsumeShowParty(v)
+            WQ.SetConsumablesShowParty(v)
             -- Enabling while already in a party dungeon won't hit a transition, so open the HUD now.
-            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetConsumeHUDOpen(true) end
+            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetConsumablesHUDOpen(true) end
         end, COL3)
     CheckRow("Glow missing icons", -76,
-        function() return WQ.IsConsumeGlow() end, function(v) WQ.SetConsumeGlow(v) end)
+        function() return WQ.IsConsumablesGlow() end, function(v) WQ.SetConsumablesGlow(v) end)
     CheckRow("Transparent mode", -76,
-        function() return WQ.IsConsumeTransparent() end, function(v) WQ.SetConsumeTransparent(v) end, COL2)
+        function() return WQ.IsConsumablesTransparent() end, function(v) WQ.SetConsumablesTransparent(v) end, COL2)
 
     Rule(-108)
 
@@ -2324,13 +2324,13 @@ do
     threshUnit:SetText("minutes")
 
     local function RefreshThresholdBox()
-        local mins = WQ.GetConsumeThreshold() / 60
+        local mins = WQ.GetConsumablesThreshold() / 60
         if mins == math.floor(mins) then threshBox:SetText(("%d"):format(mins))
         else threshBox:SetText(("%.1f"):format(mins)) end
     end
     local function CommitThreshold()
         local mins = tonumber(threshBox:GetText())
-        if mins and mins > 0 then WQ.SetConsumeThreshold(mins * 60) end
+        if mins and mins > 0 then WQ.SetConsumablesThreshold(mins * 60) end
         RefreshThresholdBox()   -- reflect the stored (clamped) value
     end
     threshBox:SetScript("OnEnterPressed", function(self) CommitThreshold(); self:ClearFocus() end)
@@ -2348,8 +2348,8 @@ do
         local spec  = WQ.CONSUMABLES and WQ.CONSUMABLES[key]
         local label = spec and spec.label or key
         CheckRow(label, y,
-            function() return WQ.IsConsumeTracked(key) end,
-            function(v) WQ.SetConsumeTracked(key, v) end,
+            function() return WQ.IsConsumableTracked(key) end,
+            function(v) WQ.SetConsumableTracked(key, v) end,
             (i % 2 == 1) and COL1 or COL2)   -- odd = left column, even = right
         if i % 2 == 0 then y = y - 28 end    -- drop to the next row after each pair
     end
@@ -2358,9 +2358,9 @@ do
     -- Appearance: this HUD's backdrop opacity (independent of the main window and the other HUDs).
     Rule(y)
     Heading("Appearance", y - 16)
-    syncers[#syncers + 1] = MakeOpacityRow(cons, PAD_L, y - 42, WQ.GetConsumeOpacity, WQ.SetConsumeOpacity)
+    syncers[#syncers + 1] = MakeOpacityRow(cons, PAD_L, y - 42, WQ.GetConsumablesOpacity, WQ.SetConsumablesOpacity)
 
-    -- Re-sync every widget (page show / profile switch); the HUD's X button calls it too (SetConsumeHUDOpen).
+    -- Re-sync every widget (page show / profile switch); the HUD's X button calls it too (SetConsumablesHUDOpen).
     function WQ.SyncConsumablesPage()
         for _, sync in ipairs(syncers) do sync() end
     end
@@ -2543,23 +2543,23 @@ do
     Caption("Each row reads: who cast it, the target (with its raid marker), the curse, and the time " ..
             "left. Your own curses sort to the top, then whichever is closest to dropping.", -26)
     CheckRow("Show HUD", -66,
-        function() return WQ.IsCurseHUDOpen() end, function(v) WQ.SetCurseHUDOpen(v) end)
+        function() return WQ.IsCursesHUDOpen() end, function(v) WQ.SetCursesHUDOpen(v) end)
     CheckRow("Auto-show in raid", -66,
-        function() return WQ.IsCurseShowRaid() end,
+        function() return WQ.IsCursesShowRaid() end,
         function(v)
-            WQ.SetCurseShowRaid(v)
+            WQ.SetCursesShowRaid(v)
             -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
-            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetCurseHUDOpen(true) end
+            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetCursesHUDOpen(true) end
         end, COL2)
     CheckRow("Auto-show in party", -66,
-        function() return WQ.IsCurseShowParty() end,
+        function() return WQ.IsCursesShowParty() end,
         function(v)
-            WQ.SetCurseShowParty(v)
+            WQ.SetCursesShowParty(v)
             -- Enabling while already in a party dungeon won't hit a transition, so open the HUD now.
-            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetCurseHUDOpen(true) end
+            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetCursesHUDOpen(true) end
         end, COL3)
     CheckRow("Hide when no curses are active", -92,
-        function() return WQ.IsCurseHideInactive() end, function(v) WQ.SetCurseHideInactive(v) end)
+        function() return WQ.IsCursesHideInactive() end, function(v) WQ.SetCursesHideInactive(v) end)
 
     Rule(-124)
 
@@ -2581,7 +2581,7 @@ do
     -- Appearance: this HUD's backdrop opacity (independent of the main window and the other HUDs).
     Rule(y - 8)
     Heading("Appearance", y - 24)
-    syncers[#syncers + 1] = MakeOpacityRow(curse, PAD_L, y - 50, WQ.GetCurseOpacity, WQ.SetCurseOpacity)
+    syncers[#syncers + 1] = MakeOpacityRow(curse, PAD_L, y - 50, WQ.GetCursesOpacity, WQ.SetCursesOpacity)
 
     Rule(y - 82)
     Caption("Only curses cast by warlocks in your own party or raid are shown. Timers come from the " ..
@@ -3023,7 +3023,7 @@ end
 -- Two standalone movable list HUDs built from ONE shell (MakeListHUD below): frame, header, padlock,
 -- close X, drag, saved position, row factory and the auto-show visibility pass are identical, so they
 -- live in one place and each HUD only supplies its rows.
---   Cooldowns HUD (`Warlock_Qol_Tbc_HUD`)          every cooldown the PLAYER has running, from the
+--   Cooldowns HUD (`Warlock_Qol_Tbc_CooldownsHUD`)          every cooldown the PLAYER has running, from the
 --                                                  core's general scan. Useful solo too.
 --   Soulstone HUD (`Warlock_Qol_Tbc_SoulstoneHUD`) each group warlock's soulstone cooldown, then who
 --                                                  currently HAS a soulstone. A group tool.
@@ -3293,12 +3293,12 @@ do
     -- ── Cooldowns HUD: the player's own cooldowns ──
     do
         local shell = MakeListHUD({
-            name = "Warlock_Qol_Tbc_HUD", title = "Cooldowns", width = 190, x = 320, y = 80,
-            dbKey = "trackerHUD", opacity = WQ.GetTrackerOpacity,
-            enabled   = function() return WQ.IsTrackerEnabled() end,
-            showRaid  = function() return WQ.IsTrackerShowRaid() end,
-            showParty = function() return WQ.IsTrackerShowParty() end,
-            sync      = function() if WQ.SyncTrackerPage then WQ.SyncTrackerPage() end end,
+            name = "Warlock_Qol_Tbc_CooldownsHUD", title = "Cooldowns", width = 190, x = 320, y = 80,
+            dbKey = "trackerHUD", opacity = WQ.GetCooldownsOpacity,
+            enabled   = function() return WQ.IsCooldownsEnabled() end,
+            showRaid  = function() return WQ.IsCooldownsShowRaid() end,
+            showParty = function() return WQ.IsCooldownsShowParty() end,
+            sync      = function() if WQ.SyncCooldownsPage then WQ.SyncCooldownsPage() end end,
         })
         local hud = shell.hud
 
@@ -3367,15 +3367,15 @@ do
             if (WQ.ScanOwnCooldowns and WQ.ScanOwnCooldowns()) or UpdateTimers() then shell.Refresh() end
         end)
 
-        WQ.RefreshTrackerHUD          = shell.Refresh
-        WQ.UpdateTrackerHUDVisibility = shell.ApplyVisibility
-        WQ.IsTrackerHUDOpen           = shell.IsOpen
-        WQ.SetTrackerHUDOpen          = shell.SetOpen
-        WQ.IsTrackerHUDLocked         = shell.IsLocked
-        WQ.SetTrackerHUDLocked        = shell.SetLocked
-        WQ.InitTrackerHUD             = shell.Init
-        function WQ.ToggleTrackerHUD()  shell.SetOpen(not shell.IsOpen()) end
-        function WQ.DismissTrackerHUD() shell.SetOpen(false) end
+        WQ.RefreshCooldownsHUD          = shell.Refresh
+        WQ.UpdateCooldownsHUDVisibility = shell.ApplyVisibility
+        WQ.IsCooldownsHUDOpen           = shell.IsOpen
+        WQ.SetCooldownsHUDOpen          = shell.SetOpen
+        WQ.IsCooldownsHUDLocked         = shell.IsLocked
+        WQ.SetCooldownsHUDLocked        = shell.SetLocked
+        WQ.InitCooldownsHUD             = shell.Init
+        function WQ.ToggleCooldownsHUD()  shell.SetOpen(not shell.IsOpen()) end
+        function WQ.DismissCooldownsHUD() shell.SetOpen(false) end
     end
 
     -- ── Soulstone HUD: the group's soulstone cooldowns, then who has one ──
@@ -3397,9 +3397,9 @@ do
             if not name or name == "" then return end
             local channel = GroupChannel()
             if not channel then return end
-            local spec  = WQ.TRACKED_COOLDOWNS and WQ.TRACKED_COOLDOWNS[HUD_KEY]
+            local spec  = WQ.GROUP_COOLDOWNS and WQ.GROUP_COOLDOWNS[HUD_KEY]
             local label = (spec and spec.label) or HUD_KEY
-            local rem   = (WQ.GetTrackerRemaining and WQ.GetTrackerRemaining(HUD_KEY, name)) or 0
+            local rem   = (WQ.GetGroupCooldownRemaining and WQ.GetGroupCooldownRemaining(HUD_KEY, name)) or 0
             if rem > 0 then
                 SendChatMessage(("%s: %s - %s remaining"):format(name, label, FormatCD(rem)), channel)
             else
@@ -3412,7 +3412,7 @@ do
             if not name or name == "" then return end
             local channel = GroupChannel()
             if not channel then return end
-            local rem = WQ.GetSoulstoneRemaining and WQ.GetSoulstoneRemaining(name)
+            local rem = WQ.GetSoulstoneBuffRemaining and WQ.GetSoulstoneBuffRemaining(name)
             if rem and rem > 0 then
                 SendChatMessage(("%s has a Soulstone - %s remaining"):format(name, FormatCD(rem)), channel)
             else
@@ -3428,7 +3428,7 @@ do
 
         local function UpdateTimers()
             for _, a in ipairs(cdActive) do
-                local rem = WQ.GetTrackerRemaining and WQ.GetTrackerRemaining(HUD_KEY, a.name) or 0
+                local rem = WQ.GetGroupCooldownRemaining and WQ.GetGroupCooldownRemaining(HUD_KEY, a.name) or 0
                 if rem > 0 then
                     a.row.timer:SetText(FormatCD(rem))
                     a.row.timer:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])  -- on cooldown = red
@@ -3438,7 +3438,7 @@ do
                 end
             end
             for _, a in ipairs(ssActive) do
-                local rem = WQ.GetSoulstoneRemaining and WQ.GetSoulstoneRemaining(a.name)
+                local rem = WQ.GetSoulstoneBuffRemaining and WQ.GetSoulstoneBuffRemaining(a.name)
                 if rem == nil then
                     a.row.timer:SetText("")                                               -- gone; pruned next rebuild
                 elseif rem > 0 then
@@ -3454,13 +3454,13 @@ do
         function shell.Refresh()
             if not hud:IsShown() then return end
             if WQ.RefreshActiveSoulstones then WQ.RefreshActiveSoulstones() end   -- freshen the store first
-            local spec   = WQ.TRACKED_COOLDOWNS and WQ.TRACKED_COOLDOWNS[HUD_KEY]
+            local spec   = WQ.GROUP_COOLDOWNS and WQ.GROUP_COOLDOWNS[HUD_KEY]
             local icon   = spec and spec.icon
             wipe(cdActive); wipe(ssActive)
             local y, cdShown, ssShown = -HUD_BODY_TOP, 0, 0
 
             -- Each group warlock's soulstone cooldown.
-            for _, entry in ipairs((WQ.GetTrackerSnapshot and WQ.GetTrackerSnapshot()) or {}) do
+            for _, entry in ipairs((WQ.GetGroupCooldownSnapshot and WQ.GetGroupCooldownSnapshot()) or {}) do
                 cdShown = cdShown + 1
                 cdActive[cdShown] = { row = shell.PlaceRow(cdRows, cdShown, MakeCdRow, y, icon, entry.name, entry.isPlayer), name = entry.name }
                 y = y - HUD_ROW_H
@@ -3524,7 +3524,7 @@ end
 
 -- ── Missing Consumables HUD ──────────────────────────────────────────
 -- Standalone movable icon STRIP showing which raid consumables are missing (glowing icon) or about to
--- expire (icon + countdown). Purely local — reads WQ.GetConsumableSnapshot() (own buffs + weapon enchant).
+-- expire (icon + countdown). Purely local: reads WQ.GetConsumablesSnapshot() (own buffs + weapon enchant).
 -- Appears/disappears by data, so a lightweight driver re-scans a few times a second (even while hidden).
 do
     local ICON      = 35                    -- visible icon size
@@ -3537,19 +3537,19 @@ do
     local HUD_W     = 172                   -- fixed; matches the Cooldowns HUD (icons centre within it)
 
     -- mm:ss for a minute+, else "Ns". Only called with remaining > 0.
-    local function FormatCD(sec)
+    local function FormatRemaining(sec)
         sec = math.floor(sec + 0.5)
         if sec >= 60 then return ("%d:%02d"):format(math.floor(sec / 60), sec % 60) end
         return sec .. "s"
     end
 
-    local hud = CreateFrame("Frame", "Warlock_Qol_Tbc_ConsumeHUD", UIParent, "BackdropTemplate")
+    local hud = CreateFrame("Frame", "Warlock_Qol_Tbc_ConsumablesHUD", UIParent, "BackdropTemplate")
     hud:SetSize(HUD_W, BODY_TOP + CELL + PAD)
     hud:SetPoint("CENTER", UIParent, "CENTER", 320, -40)   -- default; user drags, then persisted
     hud:SetFrameStrata("MEDIUM")
     hud:SetClampedToScreen(true)
     ApplyFlat(hud, THEME.bg, true)
-    RegisterFill(hud, THEME.bg, WQ.GetConsumeOpacity)   -- own opacity value (Missing Consumables page); border solid
+    RegisterFill(hud, THEME.bg, WQ.GetConsumablesOpacity)   -- own opacity value (Missing Consumables page); border solid
     hud:Hide()
 
     -- Header strip: title (also the visual grip). No mouse, so drags fall through to the hud frame.
@@ -3692,7 +3692,7 @@ do
             cell:SetAlpha(1)
             cell.timer:SetText("")
             -- Glow the missing ones, unless the player turned the glow off.
-            if r.status == "missing" and WQ.IsConsumeGlow() then StartGlow(cell) else StopGlow(cell) end
+            if r.status == "missing" and WQ.IsConsumablesGlow() then StartGlow(cell) else StopGlow(cell) end
             cell:Show()
         end
         for i = n + 1, #cells do StopGlow(cells[i]); cells[i]:Hide() end
@@ -3706,7 +3706,7 @@ do
         for i, r in ipairs(shown) do
             local cell = cells[i]
             if cell and cell:IsShown() and r.status == "low" and r.remaining > 0 then
-                cell.timer:SetText(FormatCD(r.remaining))
+                cell.timer:SetText(FormatRemaining(r.remaining))
             end
         end
     end
@@ -3728,18 +3728,18 @@ do
         -- leaving closes it; between transitions the "open" flag is whatever the user last set.
         local nowRaid = IsInRaid() and select(2, IsInInstance()) == "raid"
         if nowRaid ~= wasInRaid then
-            if WQ.IsConsumeShowRaid() and d then d.open = nowRaid and true or false end
+            if WQ.IsConsumablesShowRaid() and d then d.open = nowRaid and true or false end
             wasInRaid = nowRaid
         end
         -- Party dungeon (a party group, not a raid, inside a 5-man instance) — its own toggle, off by default.
         local nowParty = IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party"
         if nowParty ~= wasInParty then
-            if WQ.IsConsumeShowParty() and d then d.open = nowParty and true or false end
+            if WQ.IsConsumablesShowParty() and d then d.open = nowParty and true or false end
             wasInParty = nowParty
         end
         if not (d and d.open) then hud:Hide(); lastSig = nil; return end
 
-        local snap = (WQ.GetConsumableSnapshot and WQ.GetConsumableSnapshot()) or {}
+        local snap = (WQ.GetConsumablesSnapshot and WQ.GetConsumablesSnapshot()) or {}
         local shown = {}
         for _, r in ipairs(snap) do
             if r.status == "missing" or r.status == "low" then shown[#shown + 1] = r end
@@ -3752,7 +3752,7 @@ do
         UpdateTimers(shown)
         if not hud:IsShown() then hud:Show() end
         -- No page checkbox sync here: Evaluate runs ~2.5×/s and would clobber the threshold edit
-        -- box mid-type. It's synced in SetConsumeHUDOpen (the only thing that flips "Show HUD").
+        -- box mid-type. It's synced in SetConsumablesHUDOpen (the only thing that flips "Show HUD").
     end
     WQ.UpdateConsumablesHUDVisibility = Evaluate
     WQ.RefreshConsumablesHUD = function() lastSig = nil; Evaluate() end   -- force a rebuild
@@ -3778,21 +3778,21 @@ do
     end
 
     -- Manual open/close: the "Show HUD" toggle, the HUD's X button, and /run ToggleConsumablesHUD().
-    function WQ.IsConsumeHUDOpen() local d = HUDdb(); return d and d.open or false end
-    function WQ.SetConsumeHUDOpen(on)
+    function WQ.IsConsumablesHUDOpen() local d = HUDdb(); return d and d.open or false end
+    function WQ.SetConsumablesHUDOpen(on)
         local d = HUDdb(); if d then d.open = on and true or false end
         Evaluate()
         -- Keep the config page's "Show HUD" checkbox in step (the X button may have flipped it).
         if WQ.SyncConsumablesPage then WQ.SyncConsumablesPage() end
     end
-    function WQ.ToggleConsumablesHUD() WQ.SetConsumeHUDOpen(not WQ.IsConsumeHUDOpen()) end
-    function WQ.DismissConsumablesHUD() WQ.SetConsumeHUDOpen(false) end   -- the HUD's X button
+    function WQ.ToggleConsumablesHUD() WQ.SetConsumablesHUDOpen(not WQ.IsConsumablesHUDOpen()) end
+    function WQ.DismissConsumablesHUD() WQ.SetConsumablesHUDOpen(false) end   -- the HUD's X button
 
     -- Transparent mode: drop the frame backdrop (bg + border) and hide the header (title/X) so only the
     -- icon slots show. The whole frame stays mouse-enabled, so it's still draggable by its (now invisible)
     -- area. Off restores the standard flat frame + 50% fill. Called on login and whenever the flag flips.
-    function WQ.ApplyConsumeTransparency()
-        if WQ.IsConsumeTransparent and WQ.IsConsumeTransparent() then
+    function WQ.ApplyConsumablesTransparency()
+        if WQ.IsConsumablesTransparent and WQ.IsConsumablesTransparent() then
             hud:SetBackdrop(nil)
             hudHeader:Hide()
         else
@@ -3805,7 +3805,7 @@ do
     -- Called from PLAYER_LOGIN (DB ready): restore position, start the driver if on, apply visibility.
     function WQ.InitConsumablesHUD()
         RestoreHUDPlacement()
-        WQ.ApplyConsumeTransparency()
+        WQ.ApplyConsumablesTransparency()
         WQ.UpdateConsumablesRegistration()
         Evaluate()
     end
@@ -4054,7 +4054,7 @@ end
 
 -- ── Curse Tracker HUD ───────────────────────────────────────────────────────────
 -- Standalone movable list of the curses your group's warlocks currently have out, fed entirely by the
--- core's combat-log store (WQ.GetCurseSnapshot). Row = [caster] [raid marker] [target] [curse] [timer].
+-- core's combat-log store (WQ.GetCursesSnapshot). Row = [caster] [raid marker] [target] [curse] [timer].
 -- Structure vs. ticking are split as on the cooldown HUD: rows are rebuilt on curse events only, while
 -- the OnUpdate does arithmetic on each visible row's stored expiry. A row hitting zero triggers one
 -- rebuild, which is also what lets the frame hide itself once the last curse drops.
@@ -4081,13 +4081,13 @@ do
         return sec .. "s"
     end
 
-    local hud = CreateFrame("Frame", "Warlock_Qol_Tbc_CurseHUD", UIParent, "BackdropTemplate")
+    local hud = CreateFrame("Frame", "Warlock_Qol_Tbc_CursesHUD", UIParent, "BackdropTemplate")
     hud:SetSize(HUD_W, HUD_BODY_TOP + HUD_ROW_H + HUD_PAD)
     hud:SetPoint("CENTER", UIParent, "CENTER", 320, -80)   -- default; user drags, then persisted
     hud:SetFrameStrata("MEDIUM")
     hud:SetClampedToScreen(true)
     ApplyFlat(hud, THEME.bg, true)
-    RegisterFill(hud, THEME.bg, WQ.GetCurseOpacity)   -- own opacity value (Curses page); border solid
+    RegisterFill(hud, THEME.bg, WQ.GetCursesOpacity)   -- own opacity value (Curses page); border solid
     hud:Hide()
 
     -- Header strip: title (also the visual grip). No mouse, so drags fall through to the hud frame.
@@ -4174,7 +4174,7 @@ do
     end)
     lockBtn:SetScript("OnClick", function()
         local d = HUDdb()
-        WQ.SetCurseHUDLocked(not (d and d.locked))   -- setter repaints the icon
+        WQ.SetCursesHUDLocked(not (d and d.locked))   -- setter repaints the icon
     end)
     lockBtn:SetScript("OnEnter", function(self)
         self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
@@ -4268,7 +4268,7 @@ do
     -- capped). Called on curse events, not per tick.
     function WQ.RefreshCursesHUD()
         if not hud:IsShown() then return end
-        local snap = (WQ.GetCurseSnapshot and WQ.GetCurseSnapshot()) or {}
+        local snap = (WQ.GetCursesSnapshot and WQ.GetCursesSnapshot()) or {}
         wipe(hudActive)
 
         local now = GetTime()
@@ -4347,19 +4347,19 @@ do
         if not d then hud:Hide(); return end
         local nowRaid = InRaidInstance()
         if nowRaid ~= wasInRaid then
-            if WQ.IsCurseShowRaid() then d.open = nowRaid and true or false end
+            if WQ.IsCursesShowRaid() then d.open = nowRaid and true or false end
             wasInRaid = nowRaid
         end
         local nowParty = InPartyInstance()
         if nowParty ~= wasInParty then
-            if WQ.IsCurseShowParty() then d.open = nowParty and true or false end
+            if WQ.IsCursesShowParty() then d.open = nowParty and true or false end
             wasInParty = nowParty
         end
 
         local want = WQ.IsMasterEnabled() and WQ.IsCursesEnabled() and d.open and true or false
         -- Data gate, separate from `open` so "Show HUD" and the X stay authoritative either way.
-        if want and WQ.IsCurseHideInactive() then
-            local snap = WQ.GetCurseSnapshot and WQ.GetCurseSnapshot()
+        if want and WQ.IsCursesHideInactive() then
+            local snap = WQ.GetCursesSnapshot and WQ.GetCursesSnapshot()
             want = (snap and #snap > 0) and true or false
         end
 
@@ -4378,16 +4378,16 @@ do
     WQ.UpdateCursesHUDVisibility = ApplyHUDVisibility
 
     -- Manual open/close: the "Show HUD" toggle, the HUD's X button, and /run ToggleCursesHUD().
-    function WQ.IsCurseHUDOpen() local d = HUDdb(); return d and d.open or false end
-    function WQ.SetCurseHUDOpen(on)
+    function WQ.IsCursesHUDOpen() local d = HUDdb(); return d and d.open or false end
+    function WQ.SetCursesHUDOpen(on)
         local d = HUDdb(); if d then d.open = on and true or false end
         ApplyHUDVisibility()   -- re-syncs the page's checkboxes itself when the window is up
     end
-    function WQ.ToggleCursesHUD() WQ.SetCurseHUDOpen(not WQ.IsCurseHUDOpen()) end
-    function WQ.DismissCursesHUD() WQ.SetCurseHUDOpen(false) end   -- the HUD's X button
+    function WQ.ToggleCursesHUD() WQ.SetCursesHUDOpen(not WQ.IsCursesHUDOpen()) end
+    function WQ.DismissCursesHUD() WQ.SetCursesHUDOpen(false) end   -- the HUD's X button
 
-    function WQ.IsCurseHUDLocked() local d = HUDdb(); return d and d.locked or false end
-    function WQ.SetCurseHUDLocked(on)
+    function WQ.IsCursesHUDLocked() local d = HUDdb(); return d and d.locked or false end
+    function WQ.SetCursesHUDLocked(on)
         local d = HUDdb(); if d then d.locked = on and true or false end
         RefreshLockIcon()
     end
