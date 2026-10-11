@@ -256,6 +256,9 @@ local function InitProfile(p)
     -- cooldown length to show (seconds, 0 = everything above the global cooldown).
     if not p.cooldownExcludes       then p.cooldownExcludes    = {}   end
     if p.cooldownMinDuration == nil then p.cooldownMinDuration = 0    end
+    -- Cooldowns HUD transparent mode (no backdrop, header or empty-state text). Defaults OFF, unlike the
+    -- Consumables/Range equivalents, so an update never changes the look of a HUD someone already uses.
+    if p.cooldownsTransparent == nil then p.cooldownsTransparent = false end
     -- Leave the demon's own spells off the HUD (default ON, user call): most warlocks sacrifice the
     -- pet for the buff, and listing every pet spell in the exclude list would be a chore.
     if p.cooldownHidePet     == nil then p.cooldownHidePet     = true end
@@ -1618,7 +1621,7 @@ end
 -- (it would have hit exactly 200 had this section's shims been top-level), so everything here stays
 -- local to the block and only the `OwnCd` table escapes. Keep new helpers inside it.
 local OwnCd = {
-    cds     = {},      -- runtime store (NOT saved): name -> { expires (GetTime domain), icon, kind }
+    cds     = {},      -- runtime store (NOT saved): name -> { expires (GetTime domain), duration, icon, kind }
     book    = {},      -- { slot, pet, name, icon } per castable spellbook slot
     items   = {},      -- itemID -> { name, icon, subType } per bag CONSUMABLE seen this session; false = not one
     bookApi = "none",  -- which spellbook accessor resolved (DebugDumpOwnCooldowns prints it)
@@ -1938,7 +1941,9 @@ do
         for name in pairs(found) do if not cds[name] then changed = true break end end
         if not changed then for name in pairs(cds) do if not found[name] then changed = true break end end end
         wipe(cds)
-        for name, c in pairs(found) do cds[name] = { expires = c.expires, icon = c.icon, kind = c.kind } end
+        for name, c in pairs(found) do
+            cds[name] = { expires = c.expires, duration = c.duration, icon = c.icon, kind = c.kind }
+        end
         return changed
     end
 end
@@ -2713,6 +2718,16 @@ function WQ.SetCooldownsEnabled(on)
     if WQ.UpdateCooldownsHUDVisibility then WQ.UpdateCooldownsHUDVisibility() end
 end
 
+-- Cooldowns HUD transparent mode (per-profile, default off): drops the backdrop and the header (title,
+-- padlock, close X) and the "No cooldowns running" line, leaving only the rows. Same idea as the
+-- Consumables HUD's. With it on and nothing running the HUD is fully invisible, so it can only be
+-- dragged while something shows (or with the box unticked).
+function WQ.IsCooldownsTransparent() local p = ActiveProfile(); return p and p.cooldownsTransparent or false end
+function WQ.SetCooldownsTransparent(on)
+    local p = ActiveProfile(); if p then p.cooldownsTransparent = on and true or false end
+    if WQ.ApplyCooldownsTransparency then WQ.ApplyCooldownsTransparency() end
+end
+
 -- (WQ.Is/SetSoulstoneFeatureEnabled, one header switch over BOTH the soulstone announcer and this
 -- tracker, lived here from v0.29 until the tracker moved out to its own Cooldowns page. Each page now
 -- binds its own flag: the Soulstone tab soulstoneEnabled, the Cooldowns page trackerEnabled.)
@@ -2785,31 +2800,34 @@ function WQ.ScanOwnCooldowns(force)
     return OwnCd.Scan(force)
 end
 
--- Sorted snapshot for the HUD: { name, icon, kind, remaining }, soonest-ready first. Drops (and
--- prunes) anything that has run out since the last scan.
+-- Sorted snapshot for the HUD: { name, icon, kind, remaining, duration }, MOST TIME LEFT FIRST (user call,
+-- 2026-10-11: Death Coil at 1:23 above a potion at 0:59). Every row ticks down at the same rate, so the
+-- order only changes when a row joins or leaves, which is exactly when the HUD rebuilds and re-sorts.
+-- Drops (and prunes) anything that has run out since the last scan.
 function WQ.GetOwnCooldowns()
     local now, list = GetTime(), {}
     for name, c in pairs(OwnCd.cds) do
         local rem = c.expires - now
         if rem > 0 then
-            list[#list + 1] = { name = name, icon = c.icon, kind = c.kind, remaining = rem }
+            list[#list + 1] = { name = name, icon = c.icon, kind = c.kind, remaining = rem, duration = c.duration }
         else
             OwnCd.cds[name] = nil
         end
     end
     table.sort(list, function(a, b)
-        if a.remaining ~= b.remaining then return a.remaining < b.remaining end
+        if a.remaining ~= b.remaining then return a.remaining > b.remaining end
         return a.name < b.name
     end)
     return list
 end
 
--- Cheap store-only remaining getter for the HUD's tick. 0 = done / not on cooldown.
+-- Cheap store-only getter for the HUD's tick: remaining seconds (0 = done / not on cooldown), plus the
+-- cooldown's full duration as a second value, which the HUD's progress bars divide by.
 function WQ.GetOwnCooldownRemaining(name)
     local c = OwnCd.cds[name]
     if not c then return 0 end
     local rem = c.expires - GetTime()
-    return rem > 0 and rem or 0
+    return rem > 0 and rem or 0, c.duration
 end
 
 -- Own-cooldown FILTER settings: the exclude list, "Exclude pet CDs" and the minimum length. All
@@ -3933,7 +3951,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines", "cooldownExcludes" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "soulstonePvpEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "banishPvpEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneShowRaid", "soulstoneShowParty", "cooldownHidePet", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "soulstonePvpEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "banishPvpEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneShowRaid", "soulstoneShowParty", "cooldownHidePet", "cooldownsTransparent", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)

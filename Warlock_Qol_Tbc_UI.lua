@@ -2127,13 +2127,15 @@ do
 
     -- ── HUD ──
     Heading("HUD", -6)
-    Caption("Your spells, worn gear, and potions, healthstones and explosives from your bags. Group " ..
-            "soulstones have their own HUD on the Announcements > Soulstone tab.", -26)
-    -- Two rows: what the HUD shows (Show HUD, Exclude pet CDs), then when it opens on its own.
+    Caption("Your spells, gear, potions and explosives all show in the HUD.", -26)
+    -- Two rows: what the HUD shows and how (Show HUD, Exclude pet CDs, Transparent mode), then when it
+    -- opens on its own.
     CheckRow("Show HUD", -66,
         function() return WQ.IsCooldownsHUDOpen() end, function(v) WQ.SetCooldownsHUDOpen(v) end, COL1)
     CheckRow("Exclude pet CDs", -66,
         function() return WQ.IsCooldownsHidePet() end, function(v) WQ.SetCooldownsHidePet(v) end, COL2)
+    CheckRow("Transparent mode", -66,
+        function() return WQ.IsCooldownsTransparent() end, function(v) WQ.SetCooldownsTransparent(v) end, COL3)
     CheckRow("Auto-show in raid", -94,
         function() return WQ.IsCooldownsShowRaid() end,
         function(v)
@@ -3039,6 +3041,7 @@ do
     local HUD_PAD      = 6
     local HUD_BODY_TOP = HUD_PAD + HUD_HEADER_H + 4   -- y-offset of the first row below the header
     local HUD_SECT_H   = 16                           -- height of a sub-section label
+    local ROW_GAP      = 2                            -- space between progress-bar rows (spec.progressBar)
 
     -- mm:ss for a minute+, else "Ns". Only called with remaining > 0.
     local function FormatCD(sec)
@@ -3064,9 +3067,16 @@ do
     --   opacity                        that HUD's WQ.Get*Opacity (registered fill)
     --   enabled, showRaid, showParty   getters: the feature switch and the two auto-show flags
     --   sync                           called after every visibility pass (keeps "Show HUD" boxes in step)
+    --   transparent                    OPTIONAL getter: true = transparent mode (no backdrop, no header)
+    --   progressBar                    OPTIONAL true: each row gets `row.bar`, a texture behind its icon and
+    --                                  text that the HUD sizes/colours itself (see the Cooldowns HUD), and
+    --                                  rows get a small gap so neighbouring bars do not merge
     -- Returns a shell; the caller sets shell.Refresh (row rebuild) before shell.Init runs at login.
     local function MakeListHUD(spec)
         local shell = {}
+        -- Distance from one row's top to the next. Progress-bar rows get a small gap so two neighbouring
+        -- bars read as two bars rather than one solid block.
+        shell.ROW_STEP = HUD_ROW_H + (spec.progressBar and ROW_GAP or 0)
         local hud = CreateFrame("Frame", spec.name, UIParent, "BackdropTemplate")
         hud:SetSize(spec.width, HUD_BODY_TOP + HUD_ROW_H + HUD_PAD)
         hud:SetPoint("CENTER", UIParent, "CENTER", spec.x, spec.y)   -- default; user drags, then persisted
@@ -3174,6 +3184,17 @@ do
             local row = CreateFrame("Button", nil, hud)
             row:SetHeight(HUD_ROW_H)
             row:EnableMouse(true)
+            -- Optional progress bar: a plain texture on the BORDER layer, below the icon (ARTWORK) and
+            -- text (OVERLAY), inset 1px from the row's edges.
+            -- Anchored on its left edge only; the owning HUD sets its width and colour every frame.
+            if spec.progressBar then
+                local bar = row:CreateTexture(nil, "BORDER")
+                bar:SetTexture("Interface\\Buttons\\WHITE8X8")
+                bar:SetPoint("TOPLEFT",    row, "TOPLEFT",    1, -1)
+                bar:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 1,  1)
+                bar:Hide()
+                row.bar = bar
+            end
             row:RegisterForDrag("LeftButton")
             row:SetScript("OnDragStart", StartDrag)
             row:SetScript("OnDragStop", StopDrag)
@@ -3257,11 +3278,29 @@ do
             end
             -- The master switch and the feature's own switch both gate the HUD.
             if WQ.IsMasterEnabled() and spec.enabled() and d.open then
+                shell.ApplyTransparency()
                 hud:Show(); shell.Refresh()
             else
                 hud:Hide()
             end
             spec.sync()   -- keep the page's "Show HUD" box in step (the X / an auto-show may have moved it)
+        end
+
+        -- Transparent mode (only for a HUD whose spec passes a `transparent` getter): drop the backdrop
+        -- (bg + border) and hide the header, which takes the title, padlock and close X with it. Rows
+        -- then start at the top padding instead of under the missing header (BodyTop), and the HUD's
+        -- own Refresh skips its empty-state line. Same treatment as the Consumables HUD's mode.
+        function shell.IsTransparent() return spec.transparent and spec.transparent() or false end
+        function shell.BodyTop() return shell.IsTransparent() and HUD_PAD or HUD_BODY_TOP end
+        function shell.ApplyTransparency()
+            if shell.IsTransparent() then
+                hud:SetBackdrop(nil)
+                header:Hide()
+            else
+                ApplyFlat(hud, THEME.bg, true)
+                PaintFill(hud)   -- restores this HUD's own opacity
+                header:Show()
+            end
         end
 
         function shell.IsOpen() local d = db(); return d and d.open or false end
@@ -3299,35 +3338,58 @@ do
             showRaid  = function() return WQ.IsCooldownsShowRaid() end,
             showParty = function() return WQ.IsCooldownsShowParty() end,
             sync      = function() if WQ.SyncCooldownsPage then WQ.SyncCooldownsPage() end end,
+            transparent = function() return WQ.IsCooldownsTransparent() end,
+            progressBar = true,   -- user call 2026-10-11: a draining, colour-graded bar per cooldown
         })
         local hud = shell.hud
 
-        -- "Death Coil - 1:23 remaining", from CTRL+Click on a row.
+        -- "Rimm: Death Coil - 1:23 remaining", from CTRL+Click on a row. Same wording and group rules as
+        -- the Soulstone HUD's cooldown rows (user call), but with NO "Ready" form: a cooldown that has
+        -- finished is no longer on this HUD, so a click that lands just as it runs out sends nothing.
         local function AnnounceOwn(name)
             if not name or name == "" then return end
             local channel = GroupChannel()
             if not channel then return end
             local rem = WQ.GetOwnCooldownRemaining and WQ.GetOwnCooldownRemaining(name) or 0
-            if rem > 0 then
-                SendChatMessage(("%s - %s remaining"):format(name, FormatCD(rem)), channel)
-            else
-                SendChatMessage(("%s - Ready"):format(name), channel)
-            end
+            if rem <= 0 then return end
+            SendChatMessage(("%s: %s - %s remaining"):format(UnitName("player"), name, FormatCD(rem)), channel)
         end
 
         local rows, active = {}, {}
-        local function MakeOwnRow() return shell.MakeRow(AnnounceOwn) end
+        -- TRANSPARENT MODE ONLY (user call, 2026-10-11): each row gets a black background on its
+        -- BACKGROUND layer, under the progress bar (BORDER) and the icon and text, so the colour sweep
+        -- reads against black instead of the game world. Not drawn in normal mode, where the HUD's own
+        -- backdrop already sits behind the rows. Its opacity is the addon's default backdrop opacity
+        -- (80%), so it matches the other frames out of the box and follows that default if it moves.
+        local ROW_BG_ALPHA = (WQ.DEFAULT_OPACITY or 80) / 100
+        -- Side padding inside each row (user call: the icon and timer sat tight against the edges).
+        -- The name text is anchored between the icon and the timer, so it follows them in.
+        local ROW_PAD_X = 6
+        local function MakeOwnRow()
+            local row = shell.MakeRow(AnnounceOwn)
+            local bg = row:CreateTexture(nil, "BACKGROUND")
+            bg:SetAllPoints(row)
+            bg:SetColorTexture(0, 0, 0, ROW_BG_ALPHA)
+            bg:Hide()
+            row.bg = bg
+            row.icon:ClearAllPoints()
+            row.icon:SetPoint("LEFT", row, "LEFT", ROW_PAD_X, 0)
+            row.timer:ClearAllPoints()
+            row.timer:SetPoint("RIGHT", row, "RIGHT", -ROW_PAD_X, 0)
+            return row
+        end
         local empty = shell.MakeLabel("No cooldowns running", true)
 
         -- Repaint every timer. Returns true when a cooldown has run out, so the tick can rebuild and
-        -- drop its row (a row disappears when its cooldown is done).
+        -- drop its row (a row disappears when its cooldown is done). The text is off-white rather than
+        -- the usual cooldown red, because it sits on the progress bar, which is itself red at the start.
         local function UpdateTimers()
             local expired = false
             for _, a in ipairs(active) do
                 local rem = WQ.GetOwnCooldownRemaining and WQ.GetOwnCooldownRemaining(a.name) or 0
                 if rem > 0 then
                     a.row.timer:SetText(FormatCD(rem))
-                    a.row.timer:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])
+                    a.row.timer:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
                 else
                     expired = true
                 end
@@ -3335,32 +3397,78 @@ do
             return expired
         end
 
+        -- ── Progress bars (user call, 2026-10-11) ──
+        -- Each row's bar starts full and drains LEFT in step with the timer: its width is the fraction
+        -- of the cooldown remaining, so a 100s cooldown loses 1% a second. The colour blends through
+        -- three stops: a slightly dark red when full (user call; it started as a light red), orange at
+        -- 50%, green from 20% down. Half see-through so the
+        -- icon and text stay readable on top. Repainted EVERY FRAME (only a width and a colour per row,
+        -- cheap), separate from the 0.2s text tick, so a short cooldown still drains smoothly.
+        local BAR_ALPHA = 0.45
+        local BAR_RED, BAR_ORANGE, BAR_GREEN = { 0.80, 0.22, 0.22 }, { 1.00, 0.62, 0.15 }, { 0.35, 0.80, 0.35 }
+        local function Blend(a, b, t)   -- a at t = 0, b at t = 1
+            return a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t
+        end
+        local function BarColour(frac)
+            if frac >= 0.5 then return Blend(BAR_ORANGE, BAR_RED, (frac - 0.5) / 0.5) end
+            if frac >= 0.2 then return Blend(BAR_GREEN, BAR_ORANGE, (frac - 0.2) / 0.3) end
+            return BAR_GREEN[1], BAR_GREEN[2], BAR_GREEN[3]
+        end
+        local function UpdateBars()
+            for _, a in ipairs(active) do
+                local bar = a.row.bar
+                local rem, dur = 0, nil
+                if WQ.GetOwnCooldownRemaining then rem, dur = WQ.GetOwnCooldownRemaining(a.name) end
+                local inner = a.row:GetWidth() - 2   -- inside the 1px inset; 0 until the first layout pass
+                if bar and dur and dur > 0 and rem > 0 and inner > 0 then
+                    local frac = math.min(rem / dur, 1)
+                    local w = inner * frac
+                    if w >= 1 then
+                        bar:SetWidth(w)
+                        local r, g, b = BarColour(frac)
+                        bar:SetVertexColor(r, g, b, BAR_ALPHA)
+                        bar:Show()
+                    else
+                        bar:Hide()   -- under a pixel: a zero-width texture can draw unpredictably
+                    end
+                elseif bar then
+                    bar:Hide()
+                end
+            end
+        end
+
         function shell.Refresh()
             if not hud:IsShown() then return end
             if WQ.ScanOwnCooldowns then WQ.ScanOwnCooldowns() end   -- no-op unless a cooldown event arrived
             wipe(active)
-            local y, shown = -HUD_BODY_TOP, 0
+            local y, shown = -shell.BodyTop(), 0
+            local transparent = shell.IsTransparent()
             for _, c in ipairs((WQ.GetOwnCooldowns and WQ.GetOwnCooldowns()) or {}) do
                 shown = shown + 1
-                active[shown] = { row = shell.PlaceRow(rows, shown, MakeOwnRow, y, c.icon, c.name, false), name = c.name }
-                y = y - HUD_ROW_H
+                local row = shell.PlaceRow(rows, shown, MakeOwnRow, y, c.icon, c.name, false)
+                row.bg:SetShown(transparent)
+                active[shown] = { row = row, name = c.name }
+                y = y - shell.ROW_STEP
             end
+            if shown > 0 then y = y + (shell.ROW_STEP - HUD_ROW_H) end   -- no gap after the last row
             for i = shown + 1, #rows do rows[i]:Hide() end
-            if shown == 0 then
+            if shown == 0 and not shell.IsTransparent() then
                 shell.PlaceLabel(empty, y - 4)
                 y = y - HUD_ROW_H
             else
-                empty:Hide()
+                empty:Hide()   -- transparent + nothing running = nothing drawn at all
             end
             hud:SetHeight(-y + HUD_PAD)   -- content bottom (-y) plus bottom padding
             UpdateTimers()                -- paint immediately; don't wait for the next tick
+            UpdateBars()
         end
 
-        -- Every 0.2s: run the own-cooldown scan if a cooldown event arrived (coalesced here, since
-        -- SPELL_UPDATE_COOLDOWN fires on every cast) and repaint; rebuild when the set changed or a
-        -- cooldown ran out.
+        -- Every frame: the bars. Every 0.2s: run the own-cooldown scan if a cooldown event arrived
+        -- (coalesced here, since SPELL_UPDATE_COOLDOWN fires on every cast) and repaint the text;
+        -- rebuild when the set changed or a cooldown ran out.
         local acc = 0
         hud:SetScript("OnUpdate", function(_, elapsed)
+            UpdateBars()
             acc = acc + elapsed
             if acc < 0.2 then return end
             acc = 0
@@ -3374,6 +3482,7 @@ do
         WQ.IsCooldownsHUDLocked         = shell.IsLocked
         WQ.SetCooldownsHUDLocked        = shell.SetLocked
         WQ.InitCooldownsHUD             = shell.Init
+        function WQ.ApplyCooldownsTransparency() shell.ApplyTransparency(); shell.Refresh() end
         function WQ.ToggleCooldownsHUD()  shell.SetOpen(not shell.IsOpen()) end
         function WQ.DismissCooldownsHUD() shell.SetOpen(false) end
     end

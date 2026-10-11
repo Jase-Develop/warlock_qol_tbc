@@ -23,6 +23,7 @@ off game events. WarlockQol is **dependency-free**. It runs stand-alone on the s
 - **Cooldowns** - a movable HUD of every cooldown you have running: your spells, the gear you are
   wearing (trinkets and the like), and potions, healthstones and explosives from your bags, plus your
   demon's spells if you want them. Found automatically, with no list of spells to keep up to date.
+  Each row has a bar that drains as the cooldown runs, shading from red through orange to green.
   Potions share one cooldown and show as a single row. Hide anything by name, or set a minimum length.
   Works solo too. Ctrl+click a row to announce it to your group.
 - **Missing Consumables** - a movable HUD flagging missing or soon-to-expire raid consumables (flask,
