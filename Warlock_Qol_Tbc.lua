@@ -239,6 +239,15 @@ local function InitProfile(p)
     -- are harmless (nothing reads them) and are dropped on the next export/import round trip.
     if p.trackerShowRaid  == nil then p.trackerShowRaid  = true  end
     if p.trackerShowParty == nil then p.trackerShowParty = false end
+    -- The Cooldowns HUD's Soulstones section (default on; its checkbox is on the Soulstone tab), the
+    -- own-cooldown exclude list (spell/item names, any rank), and the minimum cooldown length to show
+    -- (seconds, 0 = everything above the global cooldown).
+    if p.trackerSoulstone    == nil then p.trackerSoulstone    = true end
+    if not p.cooldownExcludes       then p.cooldownExcludes    = {}   end
+    if p.cooldownMinDuration == nil then p.cooldownMinDuration = 0    end
+    -- Leave the demon's own spells off the HUD (default ON, user call): most warlocks sacrifice the
+    -- pet for the buff, and listing every pet spell in the exclude list would be a chore.
+    if p.cooldownHidePet     == nil then p.cooldownHidePet     = true end
     -- Missing Consumables: consumeShowRaid/Party = auto-show on entering a raid / party dungeon (raid on,
     -- party OFF by default); consumeThreshold = expiry warning window (secs, default 120);
     -- trackedConsumes[key]=false disables one (absent = tracked).
@@ -388,6 +397,21 @@ EnsureProfileSeeded = function()
     if not p.soulsSeeded  then SeedSoulsDefaultLine();   p.soulsSeeded  = true end
     if not p.soulstoneSeeded then SeedSoulstoneDefaultLine(); p.soulstoneSeeded = true end
     if not p.banishSeeded then SeedBanishDefaultLines(); p.banishSeeded = true end
+    -- The Cooldowns HUD's exclude list starts with the Hearthstone (user call): an hour-long cooldown
+    -- with no bearing on a party or raid. Seeded once like the lines above, so removing it sticks.
+    -- Exclusions match by NAME, so use the client's own name for item 6948 when it is cached (it is
+    -- in the bags, so it usually is) and fall back to the English one. Inline rather than a Seed*
+    -- helper to stay clear of the main chunk's 200-local limit.
+    if not p.cooldownExcludesSeeded then
+        local getName = (C_Item and C_Item.GetItemNameByID) or GetItemInfo
+        local name = (getName and getName(6948)) or "Hearthstone"
+        local have = false
+        for _, n in ipairs(p.cooldownExcludes) do
+            if n:lower() == name:lower() then have = true break end
+        end
+        if not have then table.insert(p.cooldownExcludes, name) end
+        p.cooldownExcludesSeeded = true
+    end
 end
 
 -- True if the player is a Warlock (class token is locale-independent). Reliable at PLAYER_LOGIN.
@@ -1411,6 +1435,15 @@ local function TrackerActive()
     return FeatureOn("trackerEnabled")
 end
 
+-- The HUD's Soulstones section (the group's soulstone cooldowns + who currently has one) is on. Its
+-- checkbox lives on the Announcements > Soulstone tab. Only the DISPLAY is gated: comms and the
+-- combat-log fallback keep running while the tracker is on, so this player still answers resync
+-- requests and other warlocks' HUDs keep seeing their soulstone even when they hide the section.
+local function SoulstoneTrackActive()
+    local p = ActiveProfile()
+    return TrackerActive() and p and p.trackerSoulstone ~= false
+end
+
 -- Ask everyone to rebroadcast (late-joiner catch-up). Throttled (GROUP_ROSTER_UPDATE spams).
 local lastSyncRequest  = 0
 local lastSyncResponse = 0   -- rate-limits our reply to incoming "R" so a flood can't make us spam
@@ -1522,7 +1555,7 @@ end
 -- Rescan the group and rebuild ssActive. Returns true if the SET of stoned players changed (so the
 -- HUD knows to rebuild rows vs. just re-tick the countdowns). Clears the store when the feature is off.
 local function ScanActiveSoulstones()
-    if not TrackerActive() then
+    if not SoulstoneTrackActive() then
         local had = next(ssActive) ~= nil
         ssActive = {}
         return had
@@ -1544,6 +1577,286 @@ local function ScanActiveSoulstones()
     if not changed then for name in pairs(ssActive) do if not seen[name] then changed = true break end end end
     ssActive = seen
     return changed
+end
+
+-- ── Own Cooldowns (general scan; the player's own spells + items) ──────────────
+-- Shows EVERY cooldown the player currently has running, with no list of spells to track: the client
+-- already knows them all, so we ask it. On a cooldown event we walk the spellbook (player + pet) and
+-- the usable items we have seen, read each one's cooldown, and keep whatever is still counting down.
+-- The user narrows it with an EXCLUDE list (by name, so every rank goes at once) and an optional
+-- minimum duration. Because the numbers come from the client they are exact, already include any
+-- talent that shortens a cooldown, and survive /reload with no persistence of our own.
+--
+-- OWN COOLDOWNS ONLY, deliberately (user call): the client exposes no one else's. The group soulstone
+-- tracker above is the one exception and is unchanged; its item is filtered out of this list so a
+-- soulstone never shows twice.
+--
+-- Noise the scan has to drop, since the client reports these as cooldowns too:
+--   * The GLOBAL COOLDOWN. Every cast puts every GCD spell on a ~1.5s cooldown; anything at or under
+--     GCD_MAX is skipped.
+--   * SPELL LOCKOUTS. A Counterspell / Spell Lock / Kick on you puts a whole school on cooldown at once.
+--     Spells with no cooldown of their own then report one, all sharing the SAME start and duration.
+--     So when LOCKOUT_MIN_NAMES or more different spells share an exact start+duration pair, the whole
+--     group is a lockout (or the GCD) and is dropped. Ranks are folded into one name first, so three
+--     ranks of Death Coil count once; a real shared cooldown (e.g. a shaman's three shocks) stays under
+--     the threshold.
+--   * "Waiting" cooldowns (enabled = false): a spell whose cooldown starts only when its buff is used
+--     up. Skipped until it really starts; SPELL_UPDATE_COOLDOWN fires again when it does.
+--
+-- Event-driven but coalesced: the events only set a dirty flag, and the HUD's tick runs the scan at
+-- most every 0.2s while it is shown (SPELL_UPDATE_COOLDOWN fires on every single cast).
+--
+-- SCOPED IN A do BLOCK ON PURPOSE. This file's main chunk sits close to Lua's hard limit of 200 locals
+-- (it would have hit exactly 200 had this section's shims been top-level), so everything here stays
+-- local to the block and only the `OwnCd` table escapes. Keep new helpers inside it.
+local OwnCd = {
+    cds     = {},      -- runtime store (NOT saved): name -> { expires (GetTime domain), icon, kind }
+    items   = {},      -- itemID -> { name, icon } per usable item seen this session (false = skip it)
+    book    = {},      -- { slot, pet, name, icon } per castable spellbook slot
+    bookApi = "none",  -- which spellbook accessor resolved (DebugDumpOwnCooldowns prints it)
+    cdApi   = "none",  -- which spell-cooldown accessor resolved (likewise)
+}
+do
+    local GCD_MAX           = 1.5   -- seconds; at or under this is the global cooldown, never shown
+    local LOCKOUT_MIN_NAMES = 4     -- this many distinct spells sharing one start+duration = a lockout
+
+    local ownDirty  = true   -- a cooldown event arrived since the last scan
+    local bookDirty = true   -- the spellbook (or pet) changed: rebuild OwnCd.book
+    local bagsDirty = true   -- bag contents changed: look for new usable items
+
+    -- ── Spellbook shims ──
+    -- The modern C_SpellBook namespace (tables, an Enum bank) is preferred when present, else the older
+    -- slot-based globals, mirroring the GetSpellNameByID shim. 2.5.6 should carry the globals; which one
+    -- actually resolved is recorded in OwnCd.bookApi so an in-game dump settles it.
+    local function BookBank(pet)
+        local banks = Enum and Enum.SpellBookSpellBank
+        if banks then return pet and banks.Pet or banks.Player end
+        return pet and 1 or 0
+    end
+    local function BookType(pet)
+        return pet and (BOOKTYPE_PET or "pet") or (BOOKTYPE_SPELL or "spell")
+    end
+
+    -- Number of slots in the player (pet = false) or pet (pet = true) spellbook.
+    local function BookSlotCount(pet)
+        if pet then
+            local has = (C_SpellBook and C_SpellBook.HasPetSpells) or HasPetSpells
+            return (has and has()) or 0
+        end
+        local n = 0
+        if C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines and C_SpellBook.GetSpellBookSkillLineInfo then
+            for i = 1, C_SpellBook.GetNumSpellBookSkillLines() do
+                local info = C_SpellBook.GetSpellBookSkillLineInfo(i)
+                if info and info.itemIndexOffset and info.numSpellBookItems then
+                    n = math.max(n, info.itemIndexOffset + info.numSpellBookItems)
+                end
+            end
+        elseif GetNumSpellTabs and GetSpellTabInfo then
+            for tab = 1, GetNumSpellTabs() do
+                local _, _, offset, numSlots = GetSpellTabInfo(tab)
+                if offset and numSlots then n = math.max(n, offset + numSlots) end
+            end
+        end
+        return n
+    end
+
+    -- Name, icon and spell ID of a castable spellbook slot, or nil for an unlearned / passive / flyout
+    -- slot. The ID is what the cooldown is read by (see SpellCooldownByID).
+    local function BookSlotInfo(slot, pet)
+        if C_SpellBook and C_SpellBook.GetSpellBookItemInfo then
+            OwnCd.bookApi = "C_SpellBook"
+            local info = C_SpellBook.GetSpellBookItemInfo(slot, BookBank(pet))
+            if not info or info.isPassive then return nil end
+            local T = Enum and Enum.SpellBookItemType
+            local castable
+            if T then castable = info.itemType == T.Spell or info.itemType == T.PetAction
+            else      castable = info.itemType == 1 or info.itemType == 3 end
+            if not castable then return nil end
+            return info.name, info.iconID, info.spellID or info.actionID
+        end
+        if not (GetSpellBookItemInfo and GetSpellBookItemName) then return nil end
+        OwnCd.bookApi = "GetSpellBookItemInfo"
+        local book = BookType(pet)
+        local kind, id = GetSpellBookItemInfo(slot, book)
+        if kind ~= "SPELL" and kind ~= "PETACTION" then return nil end
+        if IsPassiveSpell and IsPassiveSpell(slot, book) then return nil end
+        local tex = GetSpellBookItemTexture and GetSpellBookItemTexture(slot, book)
+        -- A PETACTION id can carry flag bits above the spell ID on some builds; keep the low 24 bits.
+        if kind == "PETACTION" and id then id = bit.band(id, 0xFFFFFF) end
+        return (GetSpellBookItemName(slot, book)), tex, id
+    end
+
+    -- start, duration, enabled for one spellbook entry (enabled normalised to a boolean).
+    -- READ BY SPELL ID, NOT BY SLOT (in-game fix, 2026-10-11). The first pass asked for the cooldown by
+    -- spellbook POSITION (GetSpellCooldown(slot, "spell")), the old Classic form. On a client that carries
+    -- C_Spell, as this one does, the global is a thin wrapper that only takes a SPELL IDENTIFIER: slot 12
+    -- was read as spell #12, which is never on cooldown, so the HUD said "No cooldowns running" for
+    -- everything. A spell ID means the same thing to every API generation. C_Spell is preferred (it
+    -- returns a table), then the global; a slot read is only the last resort when no ID resolved.
+    local function SpellCooldownByID(id)
+        if C_Spell and C_Spell.GetSpellCooldown then
+            OwnCd.cdApi = "C_Spell.GetSpellCooldown"
+            local cd = C_Spell.GetSpellCooldown(id)
+            if not cd then return nil end
+            return cd.startTime, cd.duration, cd.isEnabled ~= false
+        end
+        if not GetSpellCooldown then return nil end
+        OwnCd.cdApi = "GetSpellCooldown(id)"
+        local s, d, e = GetSpellCooldown(id)
+        return s, d, (e == true or e == 1)
+    end
+    local function BookEntryCooldown(e)
+        if e.id then return SpellCooldownByID(e.id) end
+        if C_SpellBook and C_SpellBook.GetSpellBookItemCooldown then
+            local cd = C_SpellBook.GetSpellBookItemCooldown(e.slot, BookBank(e.pet))
+            if not cd then return nil end
+            return cd.startTime, cd.duration, cd.isEnabled ~= false
+        end
+        if not GetSpellCooldown then return nil end
+        local s, d, en = GetSpellCooldown(e.slot, BookType(e.pet))
+        return s, d, (en == true or en == 1)
+    end
+
+    -- ── Item shims ──
+    local function BagSlotCount(bag)
+        local fn = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
+        return (fn and fn(bag)) or 0
+    end
+    local function BagItemLink(bag, slot)
+        local fn = (C_Container and C_Container.GetContainerItemLink) or GetContainerItemLink
+        return fn and fn(bag, slot)
+    end
+    local function ItemCooldown(itemID)
+        local fn = (C_Container and C_Container.GetItemCooldown) or GetItemCooldown
+                or (C_Item and C_Item.GetItemCooldown)
+        if not fn then return nil end
+        local s, d, e = fn(itemID)
+        return s, d, (e == true or e == 1)
+    end
+    local function ItemUseSpell(itemID)
+        local fn = (C_Item and C_Item.GetItemSpell) or GetItemSpell
+        return fn and (fn(itemID))
+    end
+    local function ItemIconByID(itemID)
+        local fn = (C_Item and C_Item.GetItemIconByID) or GetItemIcon
+        return fn and fn(itemID)
+    end
+
+    -- Remember an item if it has a USE effect (only those can have a cooldown worth showing). Kept for
+    -- the session, so an item still cools down on the HUD after its last one is consumed (the last
+    -- potion, the healthstone you just ate). The soulstone item is skipped: it has its own HUD section.
+    local function NoteItemLink(link)
+        if not link then return end
+        local id = tonumber(link:match("item:(%d+)"))
+        if not id or OwnCd.items[id] ~= nil then return end
+        local use = ItemUseSpell(id)
+        if not use then return end   -- no use effect, or not cached yet (retried on the next bag pass)
+        if use == SOULSTONE_SPELL_NAME then OwnCd.items[id] = false; return end
+        local name = link:match("%[(.-)%]")
+        if name then OwnCd.items[id] = { name = name, icon = ItemIconByID(id) } end
+    end
+
+    -- Look through the equipped slots and the backpack + four bags for usable items.
+    local function DiscoverItems()
+        for slot = 1, 19 do NoteItemLink(GetInventoryItemLink("player", slot)) end
+        for bag = 0, (NUM_BAG_SLOTS or 4) do
+            for slot = 1, BagSlotCount(bag) do NoteItemLink(BagItemLink(bag, slot)) end
+        end
+    end
+
+    -- Rebuild the cached list of castable spellbook slots (player, then pet).
+    local function RebuildBook()
+        wipe(OwnCd.book)
+        for _, pet in ipairs({ false, true }) do
+            for slot = 1, BookSlotCount(pet) do
+                local name, icon, id = BookSlotInfo(slot, pet)
+                if name then OwnCd.book[#OwnCd.book + 1] = { slot = slot, pet = pet, name = name, icon = icon, id = id } end
+            end
+        end
+    end
+
+    -- Lower-cased set of the active profile's exclusions (small; rebuilt per scan).
+    local function ExcludeSet()
+        local set, p = {}, ActiveProfile()
+        for _, n in ipairs(p and p.cooldownExcludes or {}) do
+            local key = n:match("^%s*(.-)%s*$"):lower()
+            if key ~= "" then set[key] = true end
+        end
+        return set
+    end
+
+    function OwnCd.MinDuration()
+        local p = ActiveProfile()
+        return (p and tonumber(p.cooldownMinDuration)) or 0
+    end
+
+    -- Event hooks (the event frame calls these). Cheap: they only flag work for the next scan.
+    function OwnCd.MarkDirty()     ownDirty = true end
+    function OwnCd.MarkSpellbook() ownDirty = true; bookDirty = true end
+    function OwnCd.MarkBags()      ownDirty = true; bagsDirty = true end
+
+    -- Read every candidate cooldown into OwnCd.cds. Returns true when the SET of names changed (the HUD
+    -- then rebuilds rows; otherwise its tick just re-reads the expiries). `trace`, when given, is filled
+    -- with a line per candidate saying what happened to it (used by DebugDumpOwnCooldowns).
+    function OwnCd.Scan(force, trace)
+        if not (force or ownDirty) then return false end
+        ownDirty = false
+        if bookDirty then RebuildBook();   bookDirty = false end
+        if bagsDirty then DiscoverItems(); bagsDirty = false end
+
+        local now, excluded, minDur = GetTime(), ExcludeSet(), OwnCd.MinDuration()
+        local found = {}   -- name -> { expires, icon, kind, start, duration }
+        local function consider(name, icon, kind, s, d, enabled)
+            if not (name and s and d) or s <= 0 or d <= 0 then return end
+            local why
+            if not enabled then                why = "waiting (starts when its effect ends)"
+            elseif d <= GCD_MAX then           why = "global cooldown"
+            elseif s + d <= now then           why = "finished"
+            elseif excluded[name:lower()] then why = "excluded"
+            elseif d < minDur then             why = ("shorter than the %ds minimum"):format(minDur)
+            end
+            if trace then trace[#trace + 1] = { name = name, kind = kind, rem = s + d - now, dur = d, why = why } end
+            if why then return end
+            local cur = found[name]
+            if not cur or s + d > cur.expires then   -- ranks fold into one name; keep the longest
+                found[name] = { expires = s + d, icon = icon, kind = kind, start = s, duration = d }
+            end
+        end
+
+        -- Pet spells come from their own spellbook bank, so "Exclude pet CDs" is a clean cut on e.pet.
+        local p = ActiveProfile()
+        local hidePet = p and p.cooldownHidePet ~= false
+        for _, e in ipairs(OwnCd.book) do
+            if not (e.pet and hidePet) then
+                consider(e.name, e.icon, e.pet and "pet" or "spell", BookEntryCooldown(e))
+            end
+        end
+
+        -- Lockout filter: drop any start+duration pair shared by LOCKOUT_MIN_NAMES or more SPELLS (player
+        -- or pet). Items are left out of the count, since several potions legitimately share one cooldown.
+        local function pairKey(c) return ("%.3f:%.3f"):format(c.start, c.duration) end
+        local pairCount = {}
+        for _, c in pairs(found) do
+            if c.kind ~= "item" then pairCount[pairKey(c)] = (pairCount[pairKey(c)] or 0) + 1 end
+        end
+        for name, c in pairs(found) do
+            if c.kind ~= "item" and pairCount[pairKey(c)] >= LOCKOUT_MIN_NAMES then
+                found[name] = nil
+                if trace then trace[#trace + 1] = { name = name, kind = c.kind, why = "school lockout (dropped)" } end
+            end
+        end
+
+        for id, info in pairs(OwnCd.items) do
+            if info then consider(info.name, info.icon, "item", ItemCooldown(id)) end
+        end
+
+        local cds, changed = OwnCd.cds, false
+        for name in pairs(found) do if not cds[name] then changed = true break end end
+        if not changed then for name in pairs(cds) do if not found[name] then changed = true break end end end
+        wipe(cds)
+        for name, c in pairs(found) do cds[name] = { expires = c.expires, icon = c.icon, kind = c.kind } end
+        return changed
+    end
 end
 
 -- ── Missing Consumables (detection core) ──────────────────────────────────────
@@ -1963,6 +2276,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "UNIT_PET" then
         local unit = ...
         if unit ~= "player" then return end
+        OwnCd.MarkSpellbook()   -- the pet spellbook changed with the pet (own-cooldown scan)
         if not UnitExists("pet") then return end  -- pet dismissed/died, not summoned
 
         -- family e.g. "Succubus", name e.g. "Kalneth" (both reliable after UNIT_PET fires).
@@ -2029,6 +2343,17 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             OnTrackerMessage(message, sender)
         end
 
+    elseif event == "SPELL_UPDATE_COOLDOWN" or event == "BAG_UPDATE_COOLDOWN"
+        or event == "PET_BAR_UPDATE_COOLDOWN" then
+        -- Own-cooldown scan: flag only. The HUD tick runs the scan (this fires on every cast).
+        OwnCd.MarkDirty()
+
+    elseif event == "SPELLS_CHANGED" then
+        OwnCd.MarkSpellbook()   -- learned/unlearned a spell, or the pet's spells changed
+
+    elseif event == "BAG_UPDATE_DELAYED" then
+        OwnCd.MarkBags()        -- look for new usable items before one gets used up
+
     elseif event == "GROUP_ROSTER_UPDATE" then
         -- Roster changed: request a sync, re-evaluate HUD visibility, refresh rows.
         RequestTrackerSync()
@@ -2082,16 +2407,29 @@ local function UpdateWorldRegistration()
     end
 end
 
--- Register/unregister the tracker's OWN events (comms receive + roster) to match its enabled
--- state. The combat-log fallback is handled separately by UpdateCombatLogRegistration.
+-- The own-cooldown scan's events. pcall'd because RegisterEvent RAISES on an event name the client
+-- does not know, and none of these has been confirmed on 2.5.6 yet; a missing one only costs that
+-- trigger (e.g. without BAG_UPDATE_DELAYED, a newly looted item is found on the next spell-cast scan).
+local OWN_CD_EVENTS = {
+    "SPELL_UPDATE_COOLDOWN", "BAG_UPDATE_COOLDOWN", "PET_BAR_UPDATE_COOLDOWN",
+    "SPELLS_CHANGED", "BAG_UPDATE_DELAYED",
+}
+
+-- Register/unregister the tracker's OWN events (comms receive + roster + the own-cooldown scan) to
+-- match its enabled state. The combat-log fallback is handled separately by UpdateCombatLogRegistration.
 UpdateTrackerRegistration = function()
-    if TrackerActive() then
+    local on = TrackerActive()
+    if on then
         eventFrame:RegisterEvent("CHAT_MSG_ADDON")
         eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
     else
         eventFrame:UnregisterEvent("CHAT_MSG_ADDON")
         eventFrame:UnregisterEvent("GROUP_ROSTER_UPDATE")
     end
+    for _, ev in ipairs(OWN_CD_EVENTS) do
+        pcall(on and eventFrame.RegisterEvent or eventFrame.UnregisterEvent, eventFrame, ev)
+    end
+    if on then OwnCd.MarkSpellbook(); OwnCd.MarkBags() end   -- events were off: assume anything changed
     UpdateWorldRegistration()
 end
 
@@ -2130,6 +2468,15 @@ local function SyncCursesToProfile()
     ClearAllCurses()   -- rows were collected under the old profile's tracked-curse set
     UpdateCursesRegistration()
     if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
+end
+
+-- Same for the cooldown tracker: trackerEnabled, the Soulstones-section toggle and the own-cooldown
+-- exclusions are all per-profile. Re-registering also flags the own-cooldown scan dirty, so the HUD
+-- re-reads it under the new profile's exclusions.
+local function SyncTrackerToProfile()
+    UpdateTrackerRegistration()
+    ScanActiveSoulstones()
+    if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
 end
 
 -- Per-feature flags live on the active profile; the master switch is per-character (CharState).
@@ -2244,23 +2591,17 @@ function WQ.SetTrackerEnabled(on)
     if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
 end
 
--- Combined switch for the merged Soulstone page (v0.29), which folded the old Cooldowns page in and so
--- has ONE header "Enabled" toggle over TWO independent features. Both flags stay separate underneath
--- and their own setters are still the API: this pair only exists so the shared page header has a single
--- get/set to bind to, and it routes through those setters so registration and HUD visibility stay right.
---
--- The read is deliberately an OR. A profile can hold the two diverged (cooldown HUD on, announcer off is
--- a plausible setup, and every pre-0.29 profile could reach it), and the header should read "on" when
--- ANY of the page's features is live rather than claim the page is off. CONSEQUENCE, accepted: the
--- first click on a diverged profile collapses both to one state, since the write always sets the pair.
--- Granular control did not disappear with the page merge, it moved: the announce half is silenced by
--- its own Party/Raid/BG-Arena toggles while the cooldown half keeps running.
-function WQ.IsSoulstoneFeatureEnabled()
-    return WQ.IsTrackerEnabled() or WQ.IsSoulstoneEnabled()
-end
-function WQ.SetSoulstoneFeatureEnabled(on)
-    WQ.SetTrackerEnabled(on)
-    WQ.SetSoulstoneEnabled(on)
+-- (WQ.Is/SetSoulstoneFeatureEnabled, one header switch over BOTH the soulstone announcer and this
+-- tracker, lived here from v0.29 until the tracker moved out to its own Cooldowns page. Each page now
+-- binds its own flag: the Soulstone tab soulstoneEnabled, the Cooldowns page trackerEnabled.)
+
+-- Show the Soulstones section (group soulstone CDs + who has one) on the Cooldowns HUD. Default on.
+-- Display only, see SoulstoneTrackActive: comms and the combat-log fallback keep running regardless.
+function WQ.IsTrackerSoulstone() local p = ActiveProfile(); return p and p.trackerSoulstone ~= false or false end
+function WQ.SetTrackerSoulstone(on)
+    local p = ActiveProfile(); if p then p.trackerSoulstone = on and true or false end
+    ScanActiveSoulstones()   -- clears the "who has one" store when switched off
+    if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
 end
 
 -- Per-profile "auto-show HUD" flags: raid (default on) + party (default off). Re-evaluate HUD visibility.
@@ -2300,6 +2641,134 @@ function WQ.GetTrackerSnapshot()
         return a.name < b.name
     end)
     return rows
+end
+
+-- ── Own cooldowns public API ──
+-- Run the scan if a cooldown event arrived since the last one (or always, with force). Returns true
+-- when the set of cooldowns changed, so the HUD knows to rebuild its rows rather than just re-tick.
+function WQ.ScanOwnCooldowns(force)
+    if not TrackerActive() then
+        local had = next(OwnCd.cds) ~= nil
+        wipe(OwnCd.cds)
+        return had
+    end
+    return OwnCd.Scan(force)
+end
+
+-- Sorted snapshot for the HUD: { name, icon, kind, remaining }, soonest-ready first. Drops (and
+-- prunes) anything that has run out since the last scan.
+function WQ.GetOwnCooldowns()
+    local now, list = GetTime(), {}
+    for name, c in pairs(OwnCd.cds) do
+        local rem = c.expires - now
+        if rem > 0 then
+            list[#list + 1] = { name = name, icon = c.icon, kind = c.kind, remaining = rem }
+        else
+            OwnCd.cds[name] = nil
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.remaining ~= b.remaining then return a.remaining < b.remaining end
+        return a.name < b.name
+    end)
+    return list
+end
+
+-- Cheap store-only remaining getter for the HUD's tick. 0 = done / not on cooldown.
+function WQ.GetOwnCooldownRemaining(name)
+    local c = OwnCd.cds[name]
+    if not c then return 0 end
+    local rem = c.expires - GetTime()
+    return rem > 0 and rem or 0
+end
+
+-- Own-cooldown FILTER settings: the exclude list, "Exclude pet CDs" and the minimum length. All
+-- per-profile, and every setter re-flags the scan and refreshes the HUD through ExcludesChanged.
+-- Scoped in a do block (main-chunk local limit, see OwnCd): EVERY setter that calls ExcludesChanged
+-- must live inside it, or it calls an undefined global at runtime. That is exactly the bug the first
+-- pass shipped with, SetCooldownMinDuration sitting just past the block's end.
+do
+    local function ExcludesChanged()
+        OwnCd.MarkDirty()
+        if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+    end
+
+    -- Exclude list (names, matched case-insensitively against every rank). Same add / update / delete
+    -- shape as the line pools, so the page can drive it with the shared line-list widget. Rejects a
+    -- blank name or one already on the list.
+    local function ExcludeIndex(list, name, skip)
+        local key = name:lower()
+        for i, n in ipairs(list) do
+            if i ~= skip and n:lower() == key then return i end
+        end
+    end
+    function WQ.AddCooldownExclude(text)
+        local p = ActiveProfile()
+        local name = text and text:match("^%s*(.-)%s*$") or ""
+        if not p or name == "" or ExcludeIndex(p.cooldownExcludes, name) then return false end
+        table.insert(p.cooldownExcludes, name)
+        ExcludesChanged()
+        return true
+    end
+    function WQ.UpdateCooldownExclude(index, text)
+        local p = ActiveProfile()
+        local name = text and text:match("^%s*(.-)%s*$") or ""
+        if not p or name == "" or not p.cooldownExcludes[index] then return false end
+        if ExcludeIndex(p.cooldownExcludes, name, index) then return false end
+        p.cooldownExcludes[index] = name
+        ExcludesChanged()
+        return true
+    end
+    function WQ.DeleteCooldownExclude(index)
+        local p = ActiveProfile()
+        if p and p.cooldownExcludes[index] then
+            table.remove(p.cooldownExcludes, index)
+            ExcludesChanged()
+        end
+    end
+
+    -- Leave the demon's spells off the HUD (default on).
+    function WQ.IsCooldownHidePet() local p = ActiveProfile(); return p and p.cooldownHidePet ~= false or false end
+    function WQ.SetCooldownHidePet(on)
+        local p = ActiveProfile(); if p then p.cooldownHidePet = on and true or false end
+        ExcludesChanged()
+    end
+
+    -- Minimum cooldown length to show, in seconds (0 = everything above the global cooldown). Clamped.
+    function WQ.GetCooldownMinDuration() return OwnCd.MinDuration() end
+    function WQ.SetCooldownMinDuration(secs)
+        local p = ActiveProfile()
+        secs = tonumber(secs)
+        if not p or not secs then return end
+        p.cooldownMinDuration = math.max(0, math.min(3600, math.floor(secs)))
+        ExcludesChanged()
+    end
+end
+
+-- Debug dump (/run Warlock_Qol_Tbc.DebugDumpOwnCooldowns()): which spellbook accessor resolved, how
+-- many slots and usable items were found, every cooldown the client is reporting and what the filters
+-- did with it. The first thing to read if a cooldown is missing from, or wrongly on, the HUD.
+function WQ.DebugDumpOwnCooldowns()
+    local trace = {}
+    if TrackerActive() then OwnCd.Scan(true, trace) end
+    local items = 0
+    for _, info in pairs(OwnCd.items) do if info then items = items + 1 end end
+    local withId = 0
+    for _, e in ipairs(OwnCd.book) do if e.id then withId = withId + 1 end end
+    print(("|cff9900ffWarlockQol|r Own cooldowns - active: %s, spellbook=%s (%d castable slots, %d with a spell ID), cooldowns=%s, %d usable items known, pet spells %s")
+        :format(TrackerActive() and "yes" or "no", OwnCd.bookApi, #OwnCd.book, withId, OwnCd.cdApi, items,
+                WQ.IsCooldownHidePet() and "HIDDEN (Exclude pet CDs)" or "shown"))
+    local gcd = 0
+    for _, t in ipairs(trace) do
+        if t.why == "global cooldown" then
+            gcd = gcd + 1
+        else
+            local rem = t.rem and ("%ds left of %ds"):format(math.floor(t.rem), math.floor(t.dur)) or ""
+            print(("  %s [%s] %s: %s"):format(t.name, t.kind, rem, t.why or "SHOWN"))
+        end
+    end
+    if gcd > 0 then print(("  (%d spells on the global cooldown, hidden)"):format(gcd)) end
+    if #trace == 0 then print("  (the client reports no cooldowns running)") end
 end
 
 -- Debug dump (/run Warlock_Qol_Tbc.DebugDumpCooldowns()): tracker state + each warlock's cooldowns.
@@ -3088,6 +3557,7 @@ function WQ.SwitchProfile(name)
     EnsureProfileSeeded()
     UpdateCombatLogRegistration()   -- the new profile's announcer flags may differ
     SyncCursesToProfile()
+    SyncTrackerToProfile()
     UpdateControlRegistration()     -- controlEnabled is per-profile too
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- the new profile may pick a different accent colour
     if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- ...and a different backdrop opacity
@@ -3106,6 +3576,7 @@ function WQ.CreateProfile(name)
     EnsureProfileSeeded()           -- seed the fresh profile's default lines
     UpdateCombatLogRegistration()
     SyncCursesToProfile()
+    SyncTrackerToProfile()
     UpdateControlRegistration()     -- controlEnabled is per-profile too
     return true
 end
@@ -3127,6 +3598,7 @@ function WQ.CopyProfileInto(sourceName)
     InitProfile(dst)                -- heal skeleton in case the source was partial
     UpdateCombatLogRegistration()   -- copied announcer flags may differ
     SyncCursesToProfile()
+    SyncTrackerToProfile()
     UpdateControlRegistration()     -- controlEnabled is per-profile too
     return true
 end
@@ -3167,6 +3639,7 @@ function WQ.HardReset()
 
     UpdateCombatLogRegistration()                -- listener state reset with the fresh (all-ON) flags
     SyncCursesToProfile()                        -- ...and the curse tracker back to its default (off)
+    SyncTrackerToProfile()                       -- ...and the cooldown tracker
     UpdateControlRegistration()                  -- ...and the Loss of Control announcer (also off)
     if WQ.ReapplyAccent then WQ.ReapplyAccent() end  -- back to the default accent colour
     if WQ.ReapplyOpacity then WQ.ReapplyOpacity() end  -- back to the default backdrop opacity
@@ -3325,9 +3798,9 @@ end
 
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
-local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "soulstonePvpEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "banishPvpEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
-local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
+local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines", "cooldownExcludes" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "soulstonePvpEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "banishPvpEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "trackerSoulstone", "cooldownHidePet", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
+local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded", "cooldownExcludesSeeded" }
 
 local function StringArray(src)
     local arr = {}
@@ -3390,6 +3863,10 @@ local function SanitizeProfile(raw)
     -- consumable expiry threshold (seconds) — only a sane number travels; InitProfile defaults it.
     if type(raw.consumeThreshold) == "number" and raw.consumeThreshold >= 5 and raw.consumeThreshold <= 3600 then
         p.consumeThreshold = math.floor(raw.consumeThreshold)
+    end
+    -- own-cooldown minimum length (seconds): only a sane number travels; InitProfile defaults it.
+    if type(raw.cooldownMinDuration) == "number" and raw.cooldownMinDuration >= 0 and raw.cooldownMinDuration <= 3600 then
+        p.cooldownMinDuration = math.floor(raw.cooldownMinDuration)
     end
     -- range HUD text size (points) — only a sane number travels; InitProfile defaults it.
     if type(raw.rangeFontSize) == "number" and raw.rangeFontSize >= 8 and raw.rangeFontSize <= 40 then
