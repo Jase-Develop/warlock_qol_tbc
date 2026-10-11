@@ -1584,12 +1584,13 @@ end
 -- already knows them all, so we ask it. On a cooldown event we walk the spellbook (player + pet) and
 -- the 19 equipment slots, read each one's cooldown, and keep whatever is still counting down.
 --
--- SOURCES ARE AN ALLOW-LIST, NOT A BLOCK-LIST (user call, 2026-10-11): the spellbook and what you are
--- WEARING (trinkets, neck, engineering gloves...), and nothing from the bags. That rules out, by
--- design and with no per-item lists, everything that had been leaking in from the bags: mount items,
--- the Hearthstone, potions, healthstones and any other carried item. The first version scanned the
--- bags and then had to block things one at a time (a seeded Hearthstone exclusion, a mount-item
--- check), which the allow-list replaced. CONSEQUENCE, accepted: healthstones and potions do not show.
+-- SOURCES ARE AN ALLOW-LIST, NOT A BLOCK-LIST (user call, 2026-10-11): the spellbook, what you are
+-- WEARING (trinkets, neck, engineering gloves...), and from the bags ONLY items whose item class is
+-- CONSUMABLE (potions, healthstones, explosives; food, elixirs and flasks are consumables too but have
+-- no cooldown, so they never show). Everything else in the bags is out by its class, with no per-item
+-- lists: the Hearthstone and mount items are class Miscellaneous. The first version scanned every bag
+-- item and then had to block noise one item at a time (a seeded Hearthstone exclusion, a mount-item
+-- check); a class allow-list replaced all of that.
 -- The user narrows it with an EXCLUDE list (by name, so every rank goes at once) and an optional
 -- minimum duration. Because the numbers come from the client they are exact, already include any
 -- talent that shortens a cooldown, and survive /reload with no persistence of our own.
@@ -1619,6 +1620,7 @@ end
 local OwnCd = {
     cds     = {},      -- runtime store (NOT saved): name -> { expires (GetTime domain), icon, kind }
     book    = {},      -- { slot, pet, name, icon } per castable spellbook slot
+    items   = {},      -- itemID -> { name, icon, subType } per bag CONSUMABLE seen this session; false = not one
     bookApi = "none",  -- which spellbook accessor resolved (DebugDumpOwnCooldowns prints it)
     cdApi   = "none",  -- which spell-cooldown accessor resolved (likewise)
 }
@@ -1628,6 +1630,7 @@ do
 
     local ownDirty  = true   -- a cooldown event arrived since the last scan
     local bookDirty = true   -- the spellbook (or pet) changed: rebuild OwnCd.book
+    local bagsDirty = true   -- bag contents changed: look for new consumables
 
     -- ── Spellbook shims ──
     -- The modern C_SpellBook namespace (tables, an Enum bank) is preferred when present, else the older
@@ -1755,6 +1758,61 @@ do
         return s, d, (e == true or e == 1)
     end
 
+    -- ── Bag consumables ──
+    -- PERFORMANCE: the cost of a bag pass is per SLOT (~80-100 of them), not per item, and an empty slot
+    -- is near free, so full bags and near-empty ones cost about the same: well under a millisecond. What
+    -- would matter is FREQUENCY, so discovery runs only when the bags settle (BAG_UPDATE_DELAYED fires
+    -- once after a burst of changes, not per looted item), never per cast. Between passes the scan only
+    -- reads the cooldowns of the handful of consumable IDs already found.
+    -- Found items are kept for the session, so the last potion or healthstone you used keeps counting
+    -- down after it leaves your bags.
+    local CONSUMABLE_CLASS = (Enum and Enum.ItemClass and Enum.ItemClass.Consumable) or 0
+    local function BagSlotCount(bag)
+        local fn = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
+        return (fn and fn(bag)) or 0
+    end
+    local function BagItemLink(bag, slot)
+        local fn = (C_Container and C_Container.GetContainerItemLink) or GetContainerItemLink
+        return fn and fn(bag, slot)
+    end
+    local function ItemCooldown(itemID)
+        local fn = (C_Container and C_Container.GetItemCooldown) or GetItemCooldown
+                or (C_Item and C_Item.GetItemCooldown)
+        if not fn then return nil end
+        local s, d, e = fn(itemID)
+        return s, d, (e == true or e == 1)
+    end
+    local function ItemUseSpell(itemID)
+        local fn = (C_Item and C_Item.GetItemSpell) or GetItemSpell
+        return fn and (fn(itemID))
+    end
+
+    -- Classify a bag item once per session. GetItemInfoInstant needs no item cache, so the class check
+    -- never has to wait. The soulstone item is skipped even if it is a consumable: it has its own HUD.
+    -- Its use-spell name DOES need the cache, so an uncached consumable is left unrecorded and retried on
+    -- the next bag pass rather than risking a soulstone slipping through.
+    local function NoteBagItem(link)
+        if not link then return end
+        local id = tonumber(link:match("item:(%d+)"))
+        if not id or OwnCd.items[id] ~= nil then return end
+        local getInfo = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
+        if not getInfo then return end
+        local _, _, subType, _, icon, classID = getInfo(id)
+        if classID ~= CONSUMABLE_CLASS then OwnCd.items[id] = false; return end
+        local use = ItemUseSpell(id)
+        if not use then return end                          -- not cached yet: retry next bag pass
+        if use == SOULSTONE_SPELL_NAME then OwnCd.items[id] = false; return end
+        local name = link:match("%[(.-)%]")
+        if name then OwnCd.items[id] = { name = name, icon = icon, subType = subType } end
+    end
+
+    -- One pass over the backpack + four bags (equipped gear is read directly by slot instead).
+    local function DiscoverBagItems()
+        for bag = 0, (NUM_BAG_SLOTS or 4) do
+            for slot = 1, BagSlotCount(bag) do NoteBagItem(BagItemLink(bag, slot)) end
+        end
+    end
+
     -- Rebuild the cached list of castable spellbook slots (player, then pet).
     local function RebuildBook()
         wipe(OwnCd.book)
@@ -1786,6 +1844,7 @@ do
     -- Event hooks (the event frame calls these). Cheap: they only flag work for the next scan.
     function OwnCd.MarkDirty()     ownDirty = true end
     function OwnCd.MarkSpellbook() ownDirty = true; bookDirty = true end
+    function OwnCd.MarkBags()      ownDirty = true; bagsDirty = true end
 
     -- Read every candidate cooldown into OwnCd.cds. Returns true when the SET of names changed (the HUD
     -- then rebuilds rows; otherwise its tick just re-reads the expiries). `trace`, when given, is filled
@@ -1793,7 +1852,8 @@ do
     function OwnCd.Scan(force, trace)
         if not (force or ownDirty) then return false end
         ownDirty = false
-        if bookDirty then RebuildBook(); bookDirty = false end
+        if bookDirty then RebuildBook();      bookDirty = false end
+        if bagsDirty then DiscoverBagItems(); bagsDirty = false end
 
         local now, excluded, minDur = GetTime(), ExcludeSet(), OwnCd.MinDuration()
         local found = {}   -- name -> { expires, icon, kind, start, duration }
@@ -1843,6 +1903,35 @@ do
             if name then
                 consider(name, GetInventoryItemTexture("player", slot), "item", EquippedCooldown(slot))
             end
+        end
+
+        -- Bag consumables, COLLAPSED by shared cooldown: in TBC every potion shares one cooldown, so a
+        -- healing and a mana potion would otherwise be two rows with identical timers. Items whose
+        -- cooldowns start and end at exactly the same moment become ONE row, named after their item
+        -- type ("Potion") when there are several, or after the item itself when there is one ("Master
+        -- Healthstone"). An excluded item drops out before grouping; excluding the type name ("Potion")
+        -- hides the whole group. Sorted by ID so the row keeps the same icon from scan to scan.
+        local groups, order = {}, {}
+        local ids = {}
+        for id, info in pairs(OwnCd.items) do if info then ids[#ids + 1] = id end end
+        table.sort(ids)
+        for _, id in ipairs(ids) do
+            local info = OwnCd.items[id]
+            local st, du, en = ItemCooldown(id)
+            if st and du and st > 0 and du > GCD_MAX and not excluded[info.name:lower()] then
+                local k = ("%.3f:%.3f"):format(st, du)
+                local g = groups[k]
+                if not g then
+                    g = { s = st, d = du, enabled = en, first = info, count = 0 }
+                    groups[k] = g; order[#order + 1] = k
+                end
+                g.count = g.count + 1
+            end
+        end
+        for _, k in ipairs(order) do
+            local g = groups[k]
+            local label = (g.count > 1 and g.first.subType and g.first.subType ~= "") and g.first.subType or g.first.name
+            consider(label, g.first.icon, "item", g.s, g.d, g.enabled)
         end
 
         local cds, changed = OwnCd.cds, false
@@ -2355,6 +2444,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "PLAYER_EQUIPMENT_CHANGED" then
         OwnCd.MarkDirty()       -- a different trinket (etc.) is in a slot: re-read the equipped cooldowns
 
+    elseif event == "BAG_UPDATE_DELAYED" then
+        OwnCd.MarkBags()        -- bags settled: look for new consumables before one gets used up
+
     elseif event == "GROUP_ROSTER_UPDATE" then
         -- Roster changed: request a soulstone sync, re-evaluate both HUDs, refresh the soulstone rows.
         RequestGroupCdSync()
@@ -2417,7 +2509,7 @@ end
 -- BAG_UPDATE_COOLDOWN stays: the client fires it for EQUIPPED items' cooldowns too, not just bags.
 local OWN_CD_EVENTS = {
     "SPELL_UPDATE_COOLDOWN", "BAG_UPDATE_COOLDOWN", "PET_BAR_UPDATE_COOLDOWN",
-    "SPELLS_CHANGED", "PLAYER_EQUIPMENT_CHANGED",
+    "SPELLS_CHANGED", "PLAYER_EQUIPMENT_CHANGED", "BAG_UPDATE_DELAYED",
 }
 
 -- GROUP_ROSTER_UPDATE is SHARED like PLAYER_ENTERING_WORLD: its handler re-runs BOTH the Cooldowns and
@@ -2451,7 +2543,7 @@ UpdateCooldownsRegistration = function()
     for _, ev in ipairs(OWN_CD_EVENTS) do
         pcall(on and eventFrame.RegisterEvent or eventFrame.UnregisterEvent, eventFrame, ev)
     end
-    if on then OwnCd.MarkSpellbook() end   -- events were off: assume anything changed
+    if on then OwnCd.MarkSpellbook(); OwnCd.MarkBags() end   -- events were off: assume anything changed
     UpdateRosterRegistration()
     UpdateWorldRegistration()
 end
@@ -2791,10 +2883,12 @@ function WQ.DebugDumpOwnCooldowns()
     if CooldownsActive() then OwnCd.Scan(true, trace) end
     local items = 0
     for slot = 1, 19 do if GetInventoryItemLink("player", slot) then items = items + 1 end end
+    local bagItems = 0
+    for _, info in pairs(OwnCd.items) do if info then bagItems = bagItems + 1 end end
     local withId = 0
     for _, e in ipairs(OwnCd.book) do if e.id then withId = withId + 1 end end
-    print(("|cff9900ffWarlockQol|r Own cooldowns - active: %s, spellbook=%s (%d castable slots, %d with a spell ID), cooldowns=%s, %d items equipped, pet spells %s")
-        :format(CooldownsActive() and "yes" or "no", OwnCd.bookApi, #OwnCd.book, withId, OwnCd.cdApi, items,
+    print(("|cff9900ffWarlockQol|r Own cooldowns - active: %s, spellbook=%s (%d castable slots, %d with a spell ID), cooldowns=%s, %d items equipped, %d bag consumables known, pet spells %s")
+        :format(CooldownsActive() and "yes" or "no", OwnCd.bookApi, #OwnCd.book, withId, OwnCd.cdApi, items, bagItems,
                 WQ.IsCooldownsHidePet() and "HIDDEN (Exclude pet CDs)" or "shown"))
     local gcd = 0
     for _, t in ipairs(trace) do
