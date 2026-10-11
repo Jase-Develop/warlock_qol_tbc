@@ -409,21 +409,9 @@ EnsureProfileSeeded = function()
     if not p.soulsSeeded  then SeedSoulsDefaultLine();   p.soulsSeeded  = true end
     if not p.soulstoneSeeded then SeedSoulstoneDefaultLine(); p.soulstoneSeeded = true end
     if not p.banishSeeded then SeedBanishDefaultLines(); p.banishSeeded = true end
-    -- The Cooldowns HUD's exclude list starts with the Hearthstone (user call): an hour-long cooldown
-    -- with no bearing on a party or raid. Seeded once like the lines above, so removing it sticks.
-    -- Exclusions match by NAME, so use the client's own name for item 6948 when it is cached (it is
-    -- in the bags, so it usually is) and fall back to the English one. Inline rather than a Seed*
-    -- helper to stay clear of the main chunk's 200-local limit.
-    if not p.cooldownExcludesSeeded then
-        local getName = (C_Item and C_Item.GetItemNameByID) or GetItemInfo
-        local name = (getName and getName(6948)) or "Hearthstone"
-        local have = false
-        for _, n in ipairs(p.cooldownExcludes) do
-            if n:lower() == name:lower() then have = true break end
-        end
-        if not have then table.insert(p.cooldownExcludes, name) end
-        p.cooldownExcludesSeeded = true
-    end
+    -- (A Hearthstone exclusion was seeded here briefly, behind `cooldownExcludesSeeded`. The Cooldowns
+    -- HUD stopped reading the bags, so the Hearthstone can never appear; profiles that got the entry
+    -- keep it, inert, and the stale flag is harmless.)
 end
 
 -- True if the player is a Warlock (class token is locale-independent). Reliable at PLAYER_LOGIN.
@@ -1594,14 +1582,21 @@ end
 -- ── Own Cooldowns (general scan; the player's own spells + items) ──────────────
 -- Shows EVERY cooldown the player currently has running, with no list of spells to track: the client
 -- already knows them all, so we ask it. On a cooldown event we walk the spellbook (player + pet) and
--- the usable items we have seen, read each one's cooldown, and keep whatever is still counting down.
+-- the 19 equipment slots, read each one's cooldown, and keep whatever is still counting down.
+--
+-- SOURCES ARE AN ALLOW-LIST, NOT A BLOCK-LIST (user call, 2026-10-11): the spellbook and what you are
+-- WEARING (trinkets, neck, engineering gloves...), and nothing from the bags. That rules out, by
+-- design and with no per-item lists, everything that had been leaking in from the bags: mount items,
+-- the Hearthstone, potions, healthstones and any other carried item. The first version scanned the
+-- bags and then had to block things one at a time (a seeded Hearthstone exclusion, a mount-item
+-- check), which the allow-list replaced. CONSEQUENCE, accepted: healthstones and potions do not show.
 -- The user narrows it with an EXCLUDE list (by name, so every rank goes at once) and an optional
 -- minimum duration. Because the numbers come from the client they are exact, already include any
 -- talent that shortens a cooldown, and survive /reload with no persistence of our own.
 --
--- OWN COOLDOWNS ONLY, deliberately (user call): the client exposes no one else's. The group soulstone
--- group cooldowns above are the one exception and are unchanged; its item is filtered out of this list so a
--- soulstone never shows twice.
+-- OWN COOLDOWNS ONLY, deliberately (user call): the client exposes no one else's. The soulstone group
+-- cooldowns above are the one exception, on the Soulstone HUD; the soulstone item lives in the bags, so
+-- it never reaches this list.
 --
 -- Noise the scan has to drop, since the client reports these as cooldowns too:
 --   * The GLOBAL COOLDOWN. Every cast puts every GCD spell on a ~1.5s cooldown; anything at or under
@@ -1623,7 +1618,6 @@ end
 -- local to the block and only the `OwnCd` table escapes. Keep new helpers inside it.
 local OwnCd = {
     cds     = {},      -- runtime store (NOT saved): name -> { expires (GetTime domain), icon, kind }
-    items   = {},      -- itemID -> { name, icon } per usable item seen this session (false = skip it)
     book    = {},      -- { slot, pet, name, icon } per castable spellbook slot
     bookApi = "none",  -- which spellbook accessor resolved (DebugDumpOwnCooldowns prints it)
     cdApi   = "none",  -- which spell-cooldown accessor resolved (likewise)
@@ -1634,7 +1628,6 @@ do
 
     local ownDirty  = true   -- a cooldown event arrived since the last scan
     local bookDirty = true   -- the spellbook (or pet) changed: rebuild OwnCd.book
-    local bagsDirty = true   -- bag contents changed: look for new usable items
 
     -- ── Spellbook shims ──
     -- The modern C_SpellBook namespace (tables, an Enum bank) is preferred when present, else the older
@@ -1729,51 +1722,37 @@ do
         return s, d, (en == true or en == 1)
     end
 
-    -- ── Item shims ──
-    local function BagSlotCount(bag)
-        local fn = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
-        return (fn and fn(bag)) or 0
-    end
-    local function BagItemLink(bag, slot)
-        local fn = (C_Container and C_Container.GetContainerItemLink) or GetContainerItemLink
-        return fn and fn(bag, slot)
-    end
-    local function ItemCooldown(itemID)
-        local fn = (C_Container and C_Container.GetItemCooldown) or GetItemCooldown
-                or (C_Item and C_Item.GetItemCooldown)
-        if not fn then return nil end
-        local s, d, e = fn(itemID)
-        return s, d, (e == true or e == 1)
-    end
-    local function ItemUseSpell(itemID)
-        local fn = (C_Item and C_Item.GetItemSpell) or GetItemSpell
-        return fn and (fn(itemID))
-    end
-    local function ItemIconByID(itemID)
-        local fn = (C_Item and C_Item.GetItemIconByID) or GetItemIcon
-        return fn and fn(itemID)
-    end
-
-    -- Remember an item if it has a USE effect (only those can have a cooldown worth showing). Kept for
-    -- the session, so an item still cools down on the HUD after its last one is consumed (the last
-    -- potion, the healthstone you just ate). The soulstone item is skipped: it has its own HUD section.
-    local function NoteItemLink(link)
-        if not link then return end
-        local id = tonumber(link:match("item:(%d+)"))
-        if not id or OwnCd.items[id] ~= nil then return end
-        local use = ItemUseSpell(id)
-        if not use then return end   -- no use effect, or not cached yet (retried on the next bag pass)
-        if use == SOULSTONE_SPELL_NAME then OwnCd.items[id] = false; return end
-        local name = link:match("%[(.-)%]")
-        if name then OwnCd.items[id] = { name = name, icon = ItemIconByID(id) } end
-    end
-
-    -- Look through the equipped slots and the backpack + four bags for usable items.
-    local function DiscoverItems()
-        for slot = 1, 19 do NoteItemLink(GetInventoryItemLink("player", slot)) end
-        for bag = 0, (NUM_BAG_SLOTS or 4) do
-            for slot = 1, BagSlotCount(bag) do NoteItemLink(BagItemLink(bag, slot)) end
+    -- ── Mount spells are never shown (user call, 2026-10-11) ──
+    -- Mounting can put mount spells on a cooldown the client reports like any other. Mount ITEMS need
+    -- no check (bags are not a source); mount SPELLS (a warlock's Felsteed / Dreadsteed, a paladin's
+    -- Warhorse / Charger, or a mount journal's entries on a client that has one) are left out of the
+    -- book. C_MountJournal recognises any mount generically where the client has it; MOUNT_SPELL_IDS
+    -- is only the backstop for a client without one.
+    local MOUNT_SPELL_IDS = {
+        [5784]  = true,   -- Summon Felsteed (warlock)
+        [23161] = true,   -- Summon Dreadsteed (warlock)
+        [13819] = true,   -- Summon Warhorse (paladin)
+        [23214] = true,   -- Summon Charger (paladin)
+        [34769] = true,   -- Summon Warhorse (blood elf paladin)
+        [34767] = true,   -- Summon Charger (blood elf paladin)
+    }
+    local function IsMountSpell(spellID)
+        if not spellID then return false end
+        if MOUNT_SPELL_IDS[spellID] then return true end
+        if C_MountJournal and C_MountJournal.GetMountFromSpell then
+            return C_MountJournal.GetMountFromSpell(spellID) ~= nil
         end
+        return false
+    end
+
+    -- ── Equipped items ──
+    -- Read straight from the 19 equipment slots on every scan (cheap: 19 calls), so there is nothing to
+    -- cache or discover. An item with no use effect reports a zero cooldown and is skipped. An item
+    -- unequipped mid-cooldown drops off the HUD, since it is no longer something you can use.
+    local EQUIP_SLOTS = 19
+    local function EquippedCooldown(slot)
+        local s, d, e = GetInventoryItemCooldown("player", slot)
+        return s, d, (e == true or e == 1)
     end
 
     -- Rebuild the cached list of castable spellbook slots (player, then pet).
@@ -1782,7 +1761,9 @@ do
         for _, pet in ipairs({ false, true }) do
             for slot = 1, BookSlotCount(pet) do
                 local name, icon, id = BookSlotInfo(slot, pet)
-                if name then OwnCd.book[#OwnCd.book + 1] = { slot = slot, pet = pet, name = name, icon = icon, id = id } end
+                if name and not IsMountSpell(id) then
+                    OwnCd.book[#OwnCd.book + 1] = { slot = slot, pet = pet, name = name, icon = icon, id = id }
+                end
             end
         end
     end
@@ -1805,7 +1786,6 @@ do
     -- Event hooks (the event frame calls these). Cheap: they only flag work for the next scan.
     function OwnCd.MarkDirty()     ownDirty = true end
     function OwnCd.MarkSpellbook() ownDirty = true; bookDirty = true end
-    function OwnCd.MarkBags()      ownDirty = true; bagsDirty = true end
 
     -- Read every candidate cooldown into OwnCd.cds. Returns true when the SET of names changed (the HUD
     -- then rebuilds rows; otherwise its tick just re-reads the expiries). `trace`, when given, is filled
@@ -1813,8 +1793,7 @@ do
     function OwnCd.Scan(force, trace)
         if not (force or ownDirty) then return false end
         ownDirty = false
-        if bookDirty then RebuildBook();   bookDirty = false end
-        if bagsDirty then DiscoverItems(); bagsDirty = false end
+        if bookDirty then RebuildBook(); bookDirty = false end
 
         local now, excluded, minDur = GetTime(), ExcludeSet(), OwnCd.MinDuration()
         local found = {}   -- name -> { expires, icon, kind, start, duration }
@@ -1858,8 +1837,12 @@ do
             end
         end
 
-        for id, info in pairs(OwnCd.items) do
-            if info then consider(info.name, info.icon, "item", ItemCooldown(id)) end
+        for slot = 1, EQUIP_SLOTS do
+            local link = GetInventoryItemLink("player", slot)
+            local name = link and link:match("%[(.-)%]")
+            if name then
+                consider(name, GetInventoryItemTexture("player", slot), "item", EquippedCooldown(slot))
+            end
         end
 
         local cds, changed = OwnCd.cds, false
@@ -2369,8 +2352,8 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "SPELLS_CHANGED" then
         OwnCd.MarkSpellbook()   -- learned/unlearned a spell, or the pet's spells changed
 
-    elseif event == "BAG_UPDATE_DELAYED" then
-        OwnCd.MarkBags()        -- look for new usable items before one gets used up
+    elseif event == "PLAYER_EQUIPMENT_CHANGED" then
+        OwnCd.MarkDirty()       -- a different trinket (etc.) is in a slot: re-read the equipped cooldowns
 
     elseif event == "GROUP_ROSTER_UPDATE" then
         -- Roster changed: request a soulstone sync, re-evaluate both HUDs, refresh the soulstone rows.
@@ -2430,10 +2413,11 @@ end
 
 -- The own-cooldown scan's events. pcall'd because RegisterEvent RAISES on an event name the client
 -- does not know, and none of these has been confirmed on 2.5.6 yet; a missing one only costs that
--- trigger (e.g. without BAG_UPDATE_DELAYED, a newly looted item is found on the next spell-cast scan).
+-- trigger (e.g. without PLAYER_EQUIPMENT_CHANGED, a swapped trinket is picked up on the next scan).
+-- BAG_UPDATE_COOLDOWN stays: the client fires it for EQUIPPED items' cooldowns too, not just bags.
 local OWN_CD_EVENTS = {
     "SPELL_UPDATE_COOLDOWN", "BAG_UPDATE_COOLDOWN", "PET_BAR_UPDATE_COOLDOWN",
-    "SPELLS_CHANGED", "BAG_UPDATE_DELAYED",
+    "SPELLS_CHANGED", "PLAYER_EQUIPMENT_CHANGED",
 }
 
 -- GROUP_ROSTER_UPDATE is SHARED like PLAYER_ENTERING_WORLD: its handler re-runs BOTH the Cooldowns and
@@ -2467,7 +2451,7 @@ UpdateCooldownsRegistration = function()
     for _, ev in ipairs(OWN_CD_EVENTS) do
         pcall(on and eventFrame.RegisterEvent or eventFrame.UnregisterEvent, eventFrame, ev)
     end
-    if on then OwnCd.MarkSpellbook(); OwnCd.MarkBags() end   -- events were off: assume anything changed
+    if on then OwnCd.MarkSpellbook() end   -- events were off: assume anything changed
     UpdateRosterRegistration()
     UpdateWorldRegistration()
 end
@@ -2806,10 +2790,10 @@ function WQ.DebugDumpOwnCooldowns()
     local trace = {}
     if CooldownsActive() then OwnCd.Scan(true, trace) end
     local items = 0
-    for _, info in pairs(OwnCd.items) do if info then items = items + 1 end end
+    for slot = 1, 19 do if GetInventoryItemLink("player", slot) then items = items + 1 end end
     local withId = 0
     for _, e in ipairs(OwnCd.book) do if e.id then withId = withId + 1 end end
-    print(("|cff9900ffWarlockQol|r Own cooldowns - active: %s, spellbook=%s (%d castable slots, %d with a spell ID), cooldowns=%s, %d usable items known, pet spells %s")
+    print(("|cff9900ffWarlockQol|r Own cooldowns - active: %s, spellbook=%s (%d castable slots, %d with a spell ID), cooldowns=%s, %d items equipped, pet spells %s")
         :format(CooldownsActive() and "yes" or "no", OwnCd.bookApi, #OwnCd.book, withId, OwnCd.cdApi, items,
                 WQ.IsCooldownsHidePet() and "HIDDEN (Exclude pet CDs)" or "shown"))
     local gcd = 0
@@ -3856,7 +3840,7 @@ end
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines", "cooldownExcludes" }
 local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "soulstonePvpEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "banishPvpEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneShowRaid", "soulstoneShowParty", "cooldownHidePet", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
-local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded", "cooldownExcludesSeeded" }
+local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded" }
 
 local function StringArray(src)
     local arr = {}

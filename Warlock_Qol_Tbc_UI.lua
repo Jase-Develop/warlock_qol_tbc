@@ -2127,8 +2127,8 @@ do
 
     -- ── HUD ──
     Heading("HUD", -6)
-    Caption("Your spells and items, exact to the second (your demon's too, with Exclude pet CDs off). " ..
-            "Group soulstones have a HUD of their own, set up on the Announcements > Soulstone tab.", -26)
+    Caption("Your spells and the gear you are wearing (not your bags), exact to the second. Group " ..
+            "soulstones have a HUD of their own, set up on the Announcements > Soulstone tab.", -26)
     -- Two rows: what the HUD shows (Show HUD, Exclude pet CDs), then when it opens on its own.
     CheckRow("Show HUD", -66,
         function() return WQ.IsCooldownsHUDOpen() end, function(v) WQ.SetCooldownsHUDOpen(v) end, COL1)
@@ -2188,8 +2188,8 @@ do
 
     -- Exclude list: the shared line-list widget, minus its chat-line extras (no raid markers or
     -- placeholders). Names are matched case-insensitively and cover every rank.
-    Caption("Never show these. Type the name as it appears in your spellbook or bags; every rank " ..
-            "is covered.", -232)
+    Caption("Never show these. Type the name as it appears in your spellbook or on your gear; every " ..
+            "rank is covered.", -232)
     local refreshExcludes = BuildLineList(cd, -266, {
         get    = function() local p = WQ.ActiveProfile(); return p and p.cooldownExcludes end,
         add    = function(text) return WQ.AddCooldownExclude(text) end,
