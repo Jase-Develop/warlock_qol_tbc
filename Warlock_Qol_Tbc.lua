@@ -1770,6 +1770,8 @@ do
     -- Found items are kept for the session, so the last potion or healthstone you used keeps counting
     -- down after it leaves your bags.
     local CONSUMABLE_CLASS = (Enum and Enum.ItemClass and Enum.ItemClass.Consumable) or 0
+    -- Consumable subclass "Other" (where healthstones live): a catch-all, so never used as a row label.
+    local CONSUMABLE_OTHER = (Enum and Enum.ItemConsumableSubclass and Enum.ItemConsumableSubclass.Other) or 8
     local function BagSlotCount(bag)
         local fn = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
         return (fn and fn(bag)) or 0
@@ -1800,13 +1802,35 @@ do
         if not id or OwnCd.items[id] ~= nil then return end
         local getInfo = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
         if not getInfo then return end
-        local _, _, subType, _, icon, classID = getInfo(id)
+        local _, _, subType, _, icon, classID, subClassID = getInfo(id)
         if classID ~= CONSUMABLE_CLASS then OwnCd.items[id] = false; return end
         local use = ItemUseSpell(id)
         if not use then return end                          -- not cached yet: retry next bag pass
         if use == SOULSTONE_SPELL_NAME then OwnCd.items[id] = false; return end
         local name = link:match("%[(.-)%]")
+        if subClassID == CONSUMABLE_OTHER then subType = nil end
         if name then OwnCd.items[id] = { name = name, icon = icon, subType = subType } end
+    end
+
+    -- The words every name in the list ends with: "Master Healthstone" + "Major Healthstone" gives
+    -- "Healthstone", "Super Healing Potion" + "Super Mana Potion" gives "Potion". nil when they share none.
+    local function SharedEnding(names)
+        local common
+        for _, n in ipairs(names) do
+            local words = {}
+            for w in n:gmatch("%S+") do words[#words + 1] = w end
+            if not common then
+                common = words
+            else
+                local k = 0
+                while k < #common and k < #words and common[#common - k] == words[#words - k] do k = k + 1 end
+                local kept = {}
+                for x = #common - k + 1, #common do kept[#kept + 1] = common[x] end
+                common = kept
+            end
+            if #common == 0 then return nil end
+        end
+        return common and table.concat(common, " ")
     end
 
     -- One pass over the backpack + four bags (equipped gear is read directly by slot instead).
@@ -1910,10 +1934,11 @@ do
 
         -- Bag consumables, COLLAPSED by shared cooldown: in TBC every potion shares one cooldown, so a
         -- healing and a mana potion would otherwise be two rows with identical timers. Items whose
-        -- cooldowns start and end at exactly the same moment become ONE row, named after their item
-        -- type ("Potion") when there are several, or after the item itself when there is one ("Master
-        -- Healthstone"). An excluded item drops out before grouping; excluding the type name ("Potion")
-        -- hides the whole group. Sorted by ID so the row keeps the same icon from scan to scan.
+        -- cooldowns start and end at exactly the same moment become ONE row. One item is named as
+        -- itself ("Master Healthstone"); several take the words their names end with ("Healthstone",
+        -- "Potion"), then their item type, then the first item's name. The type is skipped when it is
+        -- "Other" (healthstones), which says nothing. An item excluded by name or by type ("Potion")
+        -- drops out before grouping. Sorted by ID so the row keeps the same icon from scan to scan.
         local groups, order = {}, {}
         local ids = {}
         for id, info in pairs(OwnCd.items) do if info then ids[#ids + 1] = id end end
@@ -1921,19 +1946,24 @@ do
         for _, id in ipairs(ids) do
             local info = OwnCd.items[id]
             local st, du, en = ItemCooldown(id)
-            if st and du and st > 0 and du > GCD_MAX and not excluded[info.name:lower()] then
+            if st and du and st > 0 and du > GCD_MAX and not excluded[info.name:lower()]
+                    and not (info.subType and excluded[info.subType:lower()]) then
                 local k = ("%.3f:%.3f"):format(st, du)
                 local g = groups[k]
                 if not g then
-                    g = { s = st, d = du, enabled = en, first = info, count = 0 }
+                    g = { s = st, d = du, enabled = en, first = info, names = {} }
                     groups[k] = g; order[#order + 1] = k
                 end
-                g.count = g.count + 1
+                g.names[#g.names + 1] = info.name
             end
         end
         for _, k in ipairs(order) do
             local g = groups[k]
-            local label = (g.count > 1 and g.first.subType and g.first.subType ~= "") and g.first.subType or g.first.name
+            local label = g.first.name
+            if #g.names > 1 then
+                local subType = g.first.subType ~= "" and g.first.subType or nil
+                label = SharedEnding(g.names) or subType or label
+            end
             consider(label, g.first.icon, "item", g.s, g.d, g.enabled)
         end
 
