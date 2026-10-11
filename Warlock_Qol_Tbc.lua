@@ -239,10 +239,12 @@ local function InitProfile(p)
     -- are harmless (nothing reads them) and are dropped on the next export/import round trip.
     if p.trackerShowRaid  == nil then p.trackerShowRaid  = true  end
     if p.trackerShowParty == nil then p.trackerShowParty = false end
-    -- The Cooldowns HUD's Soulstones section (default on; its checkbox is on the Soulstone tab), the
-    -- own-cooldown exclude list (spell/item names, any rank), and the minimum cooldown length to show
-    -- (seconds, 0 = everything above the global cooldown).
-    if p.trackerSoulstone    == nil then p.trackerSoulstone    = true end
+    -- The Soulstone HUD's auto-show pair, same defaults as the Cooldowns HUD's (raid on, party off).
+    -- Its Show HUD flag is top-level (soulstoneHUD.open), like every other HUD's.
+    if p.soulstoneShowRaid  == nil then p.soulstoneShowRaid  = true  end
+    if p.soulstoneShowParty == nil then p.soulstoneShowParty = false end
+    -- The Cooldowns HUD's own-cooldown exclude list (spell/item names, any rank), and the minimum
+    -- cooldown length to show (seconds, 0 = everything above the global cooldown).
     if not p.cooldownExcludes       then p.cooldownExcludes    = {}   end
     if p.cooldownMinDuration == nil then p.cooldownMinDuration = 0    end
     -- Leave the demon's own spells off the HUD (default ON, user call): most warlocks sacrifice the
@@ -332,6 +334,7 @@ local function InitProfile(p)
     -- per standalone HUD (each on that HUD's own page), all five independent.
     if p.opacity        == nil then p.opacity        = WQ.DEFAULT_OPACITY end
     if p.trackerOpacity == nil then p.trackerOpacity = WQ.DEFAULT_OPACITY end
+    if p.soulstoneOpacity == nil then p.soulstoneOpacity = WQ.DEFAULT_OPACITY end
     if p.consumeOpacity == nil then p.consumeOpacity = WQ.DEFAULT_OPACITY end
     if p.rangeOpacity   == nil then p.rangeOpacity   = WQ.DEFAULT_OPACITY end
     if p.curseOpacity   == nil then p.curseOpacity   = WQ.DEFAULT_OPACITY end
@@ -1435,20 +1438,20 @@ local function TrackerActive()
     return FeatureOn("trackerEnabled")
 end
 
--- The HUD's Soulstones section (the group's soulstone cooldowns + who currently has one) is on. Its
--- checkbox lives on the Announcements > Soulstone tab. Only the DISPLAY is gated: comms and the
--- combat-log fallback keep running while the tracker is on, so this player still answers resync
--- requests and other warlocks' HUDs keep seeing their soulstone even when they hide the section.
-local function SoulstoneTrackActive()
-    local p = ActiveProfile()
-    return TrackerActive() and p and p.trackerSoulstone ~= false
+-- The SOULSTONE tracker (comms, combat-log fallback and the "who has one" scan, all feeding the
+-- Soulstone HUD) runs under the Soulstone feature's own Enabled switch, the same flag as the announcer.
+-- It ran under trackerEnabled while the soulstone rows lived on the Cooldowns HUD; once they got a HUD
+-- of their own that was the wrong switch, since turning the Cooldowns HUD off would have blinded the
+-- Soulstone HUD. The HUD itself is shown by its own Show HUD / auto-show toggles on the Soulstone tab.
+local function SoulstoneActive()
+    return FeatureOn("soulstoneEnabled")
 end
 
 -- Ask everyone to rebroadcast (late-joiner catch-up). Throttled (GROUP_ROSTER_UPDATE spams).
 local lastSyncRequest  = 0
 local lastSyncResponse = 0   -- rate-limits our reply to incoming "R" so a flood can't make us spam
 local function RequestTrackerSync()
-    if not TrackerActive() then return end
+    if not SoulstoneActive() then return end
     local now = GetTime()
     if now - lastSyncRequest < 5 then return end
     lastSyncRequest = now
@@ -1468,7 +1471,7 @@ local function OnTrackerMessage(msg, sender)
             -- Clamp to the cooldown's own max so a crafted message can't show a bogus huge countdown.
             local secs = math.min(tonumber(rem), spec.duration or SOULSTONE_FALLBACK_CD)
             SetCooldown(cdKey, sender, secs, "comms")
-            if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+            if WQ.RefreshSoulstoneHUD then WQ.RefreshSoulstoneHUD() end
         end
     elseif tag == "R" then
         -- Rate-limit our reply so a "R" flood can't turn us into an addon-message spammer.
@@ -1509,7 +1512,7 @@ end
 -- Combat-log hook for a tracked cast. Mine: record/persist/broadcast my own timer. Someone
 -- else's: record a combat-log guess (won't overwrite a comms entry).
 local function OnTrackedCast(cdKey, sourceName, sourceFlags)
-    if not TrackerActive() then return end
+    if not SoulstoneActive() then return end
     local spec = TRACKED_COOLDOWNS[cdKey]
     if not spec then return end
     if IsMine(sourceFlags) then
@@ -1520,7 +1523,7 @@ local function OnTrackedCast(cdKey, sourceName, sourceFlags)
     elseif InMyGroup(sourceFlags) then
         SetCooldown(cdKey, sourceName, spec.duration, "combatlog")
     end
-    if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+    if WQ.RefreshSoulstoneHUD then WQ.RefreshSoulstoneHUD() end
 end
 
 -- ── Soulstone Active tracker (who currently HAS a soulstone buff) ──────────────
@@ -1555,7 +1558,7 @@ end
 -- Rescan the group and rebuild ssActive. Returns true if the SET of stoned players changed (so the
 -- HUD knows to rebuild rows vs. just re-tick the countdowns). Clears the store when the feature is off.
 local function ScanActiveSoulstones()
-    if not SoulstoneTrackActive() then
+    if not SoulstoneActive() then
         local had = next(ssActive) ~= nil
         ssActive = {}
         return had
@@ -2262,6 +2265,8 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- Restore the standalone HUDs (defined in the UI file) + position the minimap button.
         if WQ.InitTrackerHUD then WQ.InitTrackerHUD() end
 
+        if WQ.InitSoulstoneHUD then WQ.InitSoulstoneHUD() end
+
         if WQ.InitConsumablesHUD then WQ.InitConsumablesHUD() end
 
         if WQ.InitRangeHUD then WQ.InitRangeHUD() end
@@ -2303,9 +2308,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             -- Feed the Raid CD Tracker (my cast broadcasts real time; a group member's is a guess).
             OnTrackedCast("soulstone", sourceName, sourceFlags)
             -- A stone was just cast on someone — refresh the "Soulstones Out" list immediately.
-            if TrackerActive() then
+            if SoulstoneActive() then
                 ScanActiveSoulstones()
-                if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+                if WQ.RefreshSoulstoneHUD then WQ.RefreshSoulstoneHUD() end
             end
         elseif spellName == BanishName() and IsMine(sourceFlags) then
             -- Fires only on MY banishes: landed (aura applied) or resisted. Rank appended.
@@ -2355,16 +2360,17 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         OwnCd.MarkBags()        -- look for new usable items before one gets used up
 
     elseif event == "GROUP_ROSTER_UPDATE" then
-        -- Roster changed: request a sync, re-evaluate HUD visibility, refresh rows.
+        -- Roster changed: request a soulstone sync, re-evaluate both HUDs, refresh the soulstone rows.
         RequestTrackerSync()
-        if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
-        if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+        if WQ.UpdateTrackerHUDVisibility   then WQ.UpdateTrackerHUDVisibility()   end
+        if WQ.UpdateSoulstoneHUDVisibility then WQ.UpdateSoulstoneHUDVisibility() end
+        if WQ.RefreshSoulstoneHUD          then WQ.RefreshSoulstoneHUD()          end
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Zoning (incl. entering/leaving a raid or party instance) — GROUP_ROSTER_UPDATE does NOT fire on
         -- a zone change, so drive the tracker's auto-show transitions off this event too.
-        if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
-        if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+        if WQ.UpdateTrackerHUDVisibility   then WQ.UpdateTrackerHUDVisibility()   end
+        if WQ.UpdateSoulstoneHUDVisibility then WQ.UpdateSoulstoneHUDVisibility() end
         -- Same for the curse HUD, and drop any rows left over from the zone we just left.
         ClearAllCurses()
         if WQ.UpdateCursesHUDVisibility then WQ.UpdateCursesHUDVisibility() end
@@ -2383,12 +2389,14 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 end)
 
 -- Keep the shared combat-log event registered while master is on AND any of soulstone / banish /
--- tracker is on (the tracker's fallback rides this listener too); drop it otherwise.
+-- curses is on (the soulstone tracker's fallback rides this listener under soulstoneEnabled); drop it
+-- otherwise. trackerEnabled left this clause when the soulstone rows moved to their own HUD: the
+-- Cooldowns HUD's own-cooldown scan reads the client directly and never needed the combat log.
 UpdateCombatLogRegistration = function()
     local cs = CharState()
     local p  = ActiveProfile()
     local want = cs and cs.masterEnabled and p
-                 and (p.soulstoneEnabled or p.banishEnabled or p.trackerEnabled or p.cursesEnabled)
+                 and (p.soulstoneEnabled or p.banishEnabled or p.cursesEnabled)
     if want then
         eventFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
     else
@@ -2396,11 +2404,11 @@ UpdateCombatLogRegistration = function()
     end
 end
 
--- PLAYER_ENTERING_WORLD drives the raid/party-instance auto-show transitions for BOTH the cooldown HUD
--- and the curse HUD, so it is registered while EITHER is active and owned by neither (each feature's
--- own Update*Registration handles its other events, then calls this).
+-- PLAYER_ENTERING_WORLD drives the raid/party-instance auto-show transitions for the Cooldowns,
+-- Soulstone and Curse HUDs, so it is registered while ANY of them is active and owned by none (each
+-- feature's own Update*Registration handles its other events, then calls this).
 local function UpdateWorldRegistration()
-    if TrackerActive() or CursesActive() then
+    if TrackerActive() or SoulstoneActive() or CursesActive() then
         eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")   -- fires on zone-in (raid/party instance entry)
     else
         eventFrame:UnregisterEvent("PLAYER_ENTERING_WORLD")
@@ -2415,21 +2423,23 @@ local OWN_CD_EVENTS = {
     "SPELLS_CHANGED", "BAG_UPDATE_DELAYED",
 }
 
--- Register/unregister the tracker's OWN events (comms receive + roster + the own-cooldown scan) to
--- match its enabled state. The combat-log fallback is handled separately by UpdateCombatLogRegistration.
+-- Register/unregister BOTH trackers' own events to match their switches: the soulstone tracker's comms
+-- receive + roster (under soulstoneEnabled), and the own-cooldown scan's events (under trackerEnabled).
+-- One function because both used to be one feature, and every caller wants both re-evaluated anyway.
+-- The soulstone combat-log fallback is handled separately by UpdateCombatLogRegistration.
 UpdateTrackerRegistration = function()
-    local on = TrackerActive()
-    if on then
+    if SoulstoneActive() then
         eventFrame:RegisterEvent("CHAT_MSG_ADDON")
         eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
     else
         eventFrame:UnregisterEvent("CHAT_MSG_ADDON")
         eventFrame:UnregisterEvent("GROUP_ROSTER_UPDATE")
     end
+    local cd = TrackerActive()
     for _, ev in ipairs(OWN_CD_EVENTS) do
-        pcall(on and eventFrame.RegisterEvent or eventFrame.UnregisterEvent, eventFrame, ev)
+        pcall(cd and eventFrame.RegisterEvent or eventFrame.UnregisterEvent, eventFrame, ev)
     end
-    if on then OwnCd.MarkSpellbook(); OwnCd.MarkBags() end   -- events were off: assume anything changed
+    if cd then OwnCd.MarkSpellbook(); OwnCd.MarkBags() end   -- events were off: assume anything changed
     UpdateWorldRegistration()
 end
 
@@ -2476,7 +2486,8 @@ end
 local function SyncTrackerToProfile()
     UpdateTrackerRegistration()
     ScanActiveSoulstones()
-    if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
+    if WQ.UpdateTrackerHUDVisibility   then WQ.UpdateTrackerHUDVisibility()   end
+    if WQ.UpdateSoulstoneHUDVisibility then WQ.UpdateSoulstoneHUDVisibility() end
 end
 
 -- Per-feature flags live on the active profile; the master switch is per-character (CharState).
@@ -2485,11 +2496,16 @@ function WQ.IsSoulstoneEnabled()
     return p and p.soulstoneEnabled or false
 end
 
--- Toggle the soulstone announcer; persists + updates event registration.
+-- Toggle the whole soulstone feature (announcer + the Soulstone HUD's tracker); persists + updates
+-- event registration and the HUD.
 function WQ.SetSoulstoneEnabled(on)
     local p = ActiveProfile()
     if p then p.soulstoneEnabled = on and true or false end
     UpdateCombatLogRegistration()
+    UpdateTrackerRegistration()
+    RequestTrackerSync()
+    ScanActiveSoulstones()   -- clears the "who has one" store when switched off
+    if WQ.UpdateSoulstoneHUDVisibility then WQ.UpdateSoulstoneHUDVisibility() end
 end
 
 function WQ.IsBanishEnabled()
@@ -2566,6 +2582,7 @@ function WQ.SetMasterEnabled(on)
     UpdateCombatLogRegistration()
     UpdateTrackerRegistration()
     if WQ.UpdateTrackerHUDVisibility     then WQ.UpdateTrackerHUDVisibility()     end
+    if WQ.UpdateSoulstoneHUDVisibility   then WQ.UpdateSoulstoneHUDVisibility()   end
     if WQ.UpdateConsumablesRegistration  then WQ.UpdateConsumablesRegistration()  end
     if WQ.UpdateConsumablesHUDVisibility then WQ.UpdateConsumablesHUDVisibility() end
     if WQ.UpdateRangeRegistration        then WQ.UpdateRangeRegistration()        end
@@ -2580,14 +2597,12 @@ end
 WQ.TRACKED_COOLDOWNS = TRACKED_COOLDOWNS
 WQ.TRACKED_ORDER     = TRACKED_ORDER
 
--- Enabled flag (per-profile). Setter re-syncs listeners and requests a fresh state sync.
+-- Cooldowns HUD Enabled flag (per-profile). Setter re-syncs listeners and the HUD.
 function WQ.IsTrackerEnabled() local p = ActiveProfile(); return p and p.trackerEnabled or false end
 function WQ.SetTrackerEnabled(on)
     local p = ActiveProfile()
     if p then p.trackerEnabled = on and true or false end
-    UpdateCombatLogRegistration()
     UpdateTrackerRegistration()
-    RequestTrackerSync()
     if WQ.UpdateTrackerHUDVisibility then WQ.UpdateTrackerHUDVisibility() end
 end
 
@@ -2595,13 +2610,21 @@ end
 -- tracker, lived here from v0.29 until the tracker moved out to its own Cooldowns page. Each page now
 -- binds its own flag: the Soulstone tab soulstoneEnabled, the Cooldowns page trackerEnabled.)
 
--- Show the Soulstones section (group soulstone CDs + who has one) on the Cooldowns HUD. Default on.
--- Display only, see SoulstoneTrackActive: comms and the combat-log fallback keep running regardless.
-function WQ.IsTrackerSoulstone() local p = ActiveProfile(); return p and p.trackerSoulstone ~= false or false end
-function WQ.SetTrackerSoulstone(on)
-    local p = ActiveProfile(); if p then p.trackerSoulstone = on and true or false end
-    ScanActiveSoulstones()   -- clears the "who has one" store when switched off
-    if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
+-- (WQ.Is/SetTrackerSoulstone and its `trackerSoulstone` flag, a checkbox that showed or hid a
+-- Soulstones SECTION on the Cooldowns HUD, existed briefly in 2026-10 before the soulstone rows got a
+-- HUD of their own. A stale key on a profile is inert and drops out on the next export/import.)
+
+-- Soulstone HUD auto-show flags (per-profile): raid default on, party default off. The UI's visibility
+-- pass reads them on its instance enter/leave transitions.
+function WQ.IsSoulstoneShowRaid()  local p = ActiveProfile(); return p and p.soulstoneShowRaid  or false end
+function WQ.SetSoulstoneShowRaid(on)
+    local p = ActiveProfile(); if p then p.soulstoneShowRaid = on and true or false end
+    if WQ.UpdateSoulstoneHUDVisibility then WQ.UpdateSoulstoneHUDVisibility() end
+end
+function WQ.IsSoulstoneShowParty() local p = ActiveProfile(); return p and p.soulstoneShowParty or false end
+function WQ.SetSoulstoneShowParty(on)
+    local p = ActiveProfile(); if p then p.soulstoneShowParty = on and true or false end
+    if WQ.UpdateSoulstoneHUDVisibility then WQ.UpdateSoulstoneHUDVisibility() end
 end
 
 -- Per-profile "auto-show HUD" flags: raid (default on) + party (default off). Re-evaluate HUD visibility.
@@ -2773,7 +2796,7 @@ end
 
 -- Debug dump (/run Warlock_Qol_Tbc.DebugDumpCooldowns()): tracker state + each warlock's cooldowns.
 function WQ.DebugDumpCooldowns()
-    print(("|cff9900ffWarlockQol|r Tracker — active: %s"):format(TrackerActive() and "yes" or "no"))
+    print(("|cff9900ffWarlockQol|r Soulstone tracker - active: %s"):format(SoulstoneActive() and "yes" or "no"))
     local snap = WQ.GetTrackerSnapshot()
     if #snap == 0 then print("  (no warlocks in group — solo shows only you if you're a warlock)") end
     for _, row in ipairs(snap) do
@@ -2786,9 +2809,9 @@ function WQ.DebugDumpCooldowns()
     end
 end
 
--- (WQ.Is/SetSoulstoneActiveEnabled lived here until v0.29. The HUD's "Soulstones Out" section is now
--- simply part of what the Cooldowns HUD does, gated by TrackerActive() like the rest of it, so the
--- separate flag was a switch for half a feature that nobody would turn off on its own.)
+-- (WQ.Is/SetSoulstoneActiveEnabled lived here until v0.29. The "who has one" list is simply part of
+-- what the Soulstone HUD does, gated by SoulstoneActive() like the rest of it, so the separate flag was
+-- a switch for half a feature that nobody would turn off on its own.)
 
 -- Rescan the group for soulstone buffs; returns true if the set of stoned players changed. The HUD's
 -- driver calls this on a slow (~1s) tick and rebuilds its rows when it returns true.
@@ -2827,7 +2850,7 @@ end
 -- duration) on each group member, including out-of-range ones? Matched by name = SOULSTONE_SPELL_NAME.
 function WQ.DebugDumpSoulstones()
     print(("|cff9900ffWarlockQol|r Soulstones Out — feature active: %s (matching buff \"%s\")")
-        :format(TrackerActive() and "yes" or "no", SOULSTONE_SPELL_NAME))
+        :format(SoulstoneActive() and "yes" or "no", SOULSTONE_SPELL_NAME))
     local found = 0
     for _, unit in ipairs(GroupUnits()) do
         if UnitExists(unit) then
@@ -3212,6 +3235,8 @@ end
 function WQ.GetOpacity()         return ReadOpacity("opacity")        end
 function WQ.SetOpacity(n)        WriteOpacity("opacity", n)           end
 function WQ.GetTrackerOpacity()  return ReadOpacity("trackerOpacity") end
+function WQ.GetSoulstoneOpacity()  return ReadOpacity("soulstoneOpacity") end
+function WQ.SetSoulstoneOpacity(n) WriteOpacity("soulstoneOpacity", n)    end
 function WQ.SetTrackerOpacity(n) WriteOpacity("trackerOpacity", n)    end
 function WQ.GetConsumeOpacity()  return ReadOpacity("consumeOpacity") end
 function WQ.SetConsumeOpacity(n) WriteOpacity("consumeOpacity", n)    end
@@ -3799,7 +3824,7 @@ end
 -- Rebuild a clean profile from a foreign table, keeping ONLY known shareable fields with the
 -- right types (drops junk/wrong-typed keys and non-string lines). Used on export AND import.
 local IMPORT_POOL_FIELDS = { "ritualLines", "soulsLines", "soulstoneLines", "banishLines", "banishResistLines", "cooldownExcludes" }
-local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "soulstonePvpEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "banishPvpEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "trackerSoulstone", "cooldownHidePet", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
+local IMPORT_FLAG_FIELDS = { "petEnabled", "ritualEnabled", "soulsEnabled", "soulstoneEnabled", "soulstonePartyEnabled", "soulstoneRaidEnabled", "soulstonePvpEnabled", "banishEnabled", "banishPartyEnabled", "banishRaidEnabled", "banishPvpEnabled", "trackerEnabled", "trackerShowRaid", "trackerShowParty", "soulstoneShowRaid", "soulstoneShowParty", "cooldownHidePet", "consumablesEnabled", "consumeShowRaid", "consumeShowParty", "consumeGlow", "consumeTransparent", "rangeEnabled", "rangeTransparent", "rangeHideNoTarget", "cursesEnabled", "curseShowRaid", "curseShowParty", "curseHideInactive", "controlEnabled", "controlFear", "controlCharm", "controlIncap", "controlStun", "controlSilence", "controlRoot", "controlPartyEnabled", "controlRaidEnabled", "controlCombatOnly", "controlEcho", "controlPvpEnabled" }
 local IMPORT_SEED_FIELDS = { "ritualSeeded", "soulsSeeded", "soulstoneSeeded", "banishSeeded", "cooldownExcludesSeeded" }
 
 local function StringArray(src)
@@ -3876,7 +3901,7 @@ local function SanitizeProfile(raw)
     if type(raw.accent) == "string" and raw.accent:match("^%x%x%x%x%x%x$") then p.accent = raw.accent:lower() end
     -- Backdrop opacity (main window + the three HUDs) — only a sane percent travels each; InitProfile
     -- defaults them.
-    for _, field in ipairs({ "opacity", "trackerOpacity", "consumeOpacity", "rangeOpacity", "curseOpacity" }) do
+    for _, field in ipairs({ "opacity", "trackerOpacity", "soulstoneOpacity", "consumeOpacity", "rangeOpacity", "curseOpacity" }) do
         local v = raw[field]
         if type(v) == "number" and v >= 0 and v <= 100 then p[field] = math.floor(v) end
     end

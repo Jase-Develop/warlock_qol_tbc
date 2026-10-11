@@ -17,11 +17,13 @@ off game events. WarlockQol is **dependency-free**. It runs stand-alone on the s
   incapacitate, stun, silence, root), naming the effect and how long it lasts, so the people around you
   know you are not driving. Said out loud inside an instance, sent to party/raid out in the world. Needs
   no spell list, so nothing needs updating as you meet new bosses. Same battleground/arena opt-in.
-- **Cooldowns** - a movable HUD of every cooldown you have running (your spells, your demon's spells
-  and your items), found automatically with no list of spells to keep up to date. Hide the ones you do
-  not care about by name, or set a minimum length. A separate Soulstones section shows each party/raid
-  warlock's soulstone cooldown (Ready or a live countdown) and who currently has a soulstone on them,
-  and can be switched off. Ctrl+click any row to announce it to your group.
+- **Soulstone HUD** - a movable HUD showing each party/raid warlock's soulstone cooldown (Ready or a
+  live countdown) and who currently has a soulstone on them with the time left. Opens by itself when
+  you enter a raid. Ctrl+click any row to announce it to your group.
+- **Cooldowns** - a movable HUD of every cooldown you have running (your spells and your items, plus
+  your demon's if you want them), found automatically with no list of spells to keep up to date. Hide
+  the ones you do not care about by name, or set a minimum length. Works solo too. Ctrl+click a row to
+  announce it to your group.
 - **Missing Consumables** - a movable HUD flagging missing or soon-to-expire raid consumables (flask,
   weapon oil, food buff and elixir). It stays hidden while nothing needs attention.
 - **Curse Tracker** - a movable HUD listing the curses your group's warlocks have out on any mob:

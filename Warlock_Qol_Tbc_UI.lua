@@ -1570,17 +1570,23 @@ do
 end
 
 -- ── Soulstone tab (Announcements) ─────────────────────────────────────────────
--- A random line to party/raid when any group warlock casts a soulstone (combat-log driven, no macro).
--- `soulstone` below is the tab body frame, not a page.
+-- The soulstone feature, both halves: the announcer (a random line to party/raid when any group warlock
+-- casts a soulstone) and the Soulstone HUD (each group warlock's soulstone cooldown + who has one).
+-- `soulstone` below is the tab body frame, not a page. The header Enabled box (soulstoneEnabled) turns
+-- the whole feature on or off; within it, the announce is narrowed by its Party/Raid/BG-Arena row and
+-- the HUD by its own Show HUD / auto-show toggles.
 --
--- HISTORY: from v0.29 this was a page holding BOTH the announcer and the Cooldowns HUD settings under
--- one header switch. The HUD moved out to its own Cooldowns page when that grew into a general
--- own-cooldown tracker, so this tab is back to the announcer alone, plus ONE checkbox (below) that
--- decides whether the Cooldowns HUD shows its Soulstones section. It lives here rather than on the
--- Cooldowns page on the user's call: it is the soulstone-specific switch, so it sits with soulstones.
+-- HISTORY: v0.29 merged the old Cooldowns page in here; 2026-10 moved it back out as a general
+-- own-cooldown HUD with soulstones as a section of it; then the soulstone rows went back to a HUD of
+-- their own (user call: soulstones only matter in a group, while someone may want their own cooldowns
+-- up solo too), with its settings here under the announce row.
 do
     local soulstone = AddAnnounceTab("soulstone", "Soulstone",
         { get = WQ.IsSoulstoneEnabled, set = WQ.SetSoulstoneEnabled })
+
+    local PAD_L = 8
+    local COL1, COL2, COL3 = PAD_L, 140, 272   -- the shared checkbox column grid
+    local hudSyncers = {}   -- the HUD checkboxes: re-synced on show AND by the HUD's visibility pass
 
     local syncSoulstoneToggles = BuildAnnounceToggles(soulstone, -8,
         WQ.IsSoulstonePartyEnabled, WQ.SetSoulstonePartyEnabled,
@@ -1588,35 +1594,57 @@ do
         WQ.IsSoulstonePvpEnabled,   WQ.SetSoulstonePvpEnabled,
         { caption = "Announce any warlock's soulstone to your group." })
 
-    -- Cooldowns HUD section toggle. Display only: the tracker keeps exchanging soulstone timers with the
-    -- group either way, so other warlocks' HUDs are unaffected (see SoulstoneTrackActive in the core).
+    -- Flat checkbox + label row. State is NOT read here (the HUD getters are defined later in the file);
+    -- the registered syncer runs on show instead.
+    local function CheckRow(label, y, get, set, x)
+        local cb = CreateFrame("CheckButton", nil, soulstone, "UICheckButtonTemplate,BackdropTemplate")
+        cb:SetSize(22, 22)
+        cb:SetPoint("TOPLEFT", soulstone, "TOPLEFT", x, y)
+        StyleCheckbox(cb)
+        cb:SetScript("OnClick", function(self)
+            set(self:GetChecked())
+            self.RefreshStateColor()
+        end)
+        local fs = soulstone:CreateFontString(nil, "OVERLAY")
+        ApplyFont(fs, "body")
+        fs:SetPoint("LEFT", cb, "RIGHT", 6, 0)
+        fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+        fs:SetText(label)
+        hudSyncers[#hudSyncers + 1] = function() cb:SetChecked(get() and true or false); cb.RefreshStateColor() end
+    end
+
+    -- ── Soulstone HUD ──
     local hudHdr = soulstone:CreateFontString(nil, "OVERLAY")
     ApplyFont(hudHdr, "heading")
     AccentText(hudHdr)
-    hudHdr:SetPoint("TOPLEFT", soulstone, "TOPLEFT", 8, -96)
-    hudHdr:SetText("Cooldowns HUD")
+    hudHdr:SetPoint("TOPLEFT", soulstone, "TOPLEFT", PAD_L, -96)
+    hudHdr:SetText("Soulstone HUD")
 
-    local hudCheck = CreateFrame("CheckButton", nil, soulstone, "UICheckButtonTemplate,BackdropTemplate")
-    hudCheck:SetSize(22, 22)
-    hudCheck:SetPoint("TOPLEFT", soulstone, "TOPLEFT", 8, -118)
-    StyleCheckbox(hudCheck)
-    hudCheck:SetScript("OnClick", function(self)
-        WQ.SetTrackerSoulstone(self:GetChecked())
-        self.RefreshStateColor()
-    end)
-    local hudLabel = soulstone:CreateFontString(nil, "OVERLAY")
-    ApplyFont(hudLabel, "body")
-    hudLabel:SetPoint("LEFT", hudCheck, "RIGHT", 6, 0)
-    hudLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-    hudLabel:SetText("Show the group's soulstones in the Cooldowns HUD")
+    CheckRow("Show HUD", -118,
+        function() return WQ.IsSoulstoneHUDOpen() end, function(v) WQ.SetSoulstoneHUDOpen(v) end, COL1)
+    CheckRow("Auto-show in raid", -118,
+        function() return WQ.IsSoulstoneShowRaid() end,
+        function(v)
+            WQ.SetSoulstoneShowRaid(v)
+            -- Enabling while already in a raid instance won't hit a transition, so open the HUD now.
+            if v and IsInRaid() and select(2, IsInInstance()) == "raid" then WQ.SetSoulstoneHUDOpen(true) end
+        end, COL2)
+    CheckRow("Auto-show in party", -118,
+        function() return WQ.IsSoulstoneShowParty() end,
+        function(v)
+            WQ.SetSoulstoneShowParty(v)
+            -- Enabling while already in a party dungeon won't hit a transition, so open the HUD now.
+            if v and IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" then WQ.SetSoulstoneHUDOpen(true) end
+        end, COL3)
+    local syncOpacity = MakeOpacityRow(soulstone, PAD_L, -150, WQ.GetSoulstoneOpacity, WQ.SetSoulstoneOpacity)
 
     local rule = soulstone:CreateTexture(nil, "ARTWORK")
     rule:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
-    rule:SetPoint("TOPLEFT",  soulstone, "TOPLEFT",  8,   -150)
-    rule:SetPoint("TOPRIGHT", soulstone, "TOPRIGHT", -16, -150)
+    rule:SetPoint("TOPLEFT",  soulstone, "TOPLEFT",  PAD_L, -182)
+    rule:SetPoint("TOPRIGHT", soulstone, "TOPRIGHT", -16,   -182)
     rule:SetHeight(1)
 
-    local refreshSoulstone = BuildLineList(soulstone, -160, {
+    local refreshSoulstone = BuildLineList(soulstone, -192, {
         get    = function() local p = WQ.ActiveProfile(); return p and p.soulstoneLines end,
         add    = function(text) return WQ.AddSoulstoneLine(text) end,
         update = function(idx, text) return WQ.UpdateSoulstoneLine(idx, text) end,
@@ -1625,9 +1653,16 @@ do
         help1  = "|cff8788eeUse |r|cffaaaaaa{targetName}|r|cff8788ee as a placeholder for who got the soulstone|r",
     })
 
+    -- The HUD's visibility pass calls this after the X or an auto-show moves its open flag, so the
+    -- Show HUD box stays in step. Checkboxes only, like WQ.SyncTrackerPage.
+    function WQ.SyncSoulstoneTab()
+        for _, sync in ipairs(hudSyncers) do sync() end
+    end
+
     soulstone.OnPageShow = function()   -- header toggle synced through the Announcements proxy
         syncSoulstoneToggles()
-        hudCheck:SetChecked(WQ.IsTrackerSoulstone()); hudCheck.RefreshStateColor()
+        WQ.SyncSoulstoneTab()
+        syncOpacity()
         refreshSoulstone()
     end
 end
@@ -2029,8 +2064,8 @@ end
 -- Settings for the Cooldowns HUD (the frame itself is built near the end of the file). Header toggle
 -- drives trackerEnabled. The HUD lists every cooldown the player has running, found automatically by
 -- the core's scan, so instead of a list of tracked spells this page carries the opposite: an EXCLUDE
--- list, plus a minimum length. The HUD's Soulstones section is switched from the Announcements >
--- Soulstone tab, not here (user call: it is the soulstone-specific switch).
+-- list, plus a minimum length. Group soulstones have their own Soulstone HUD, set up on the
+-- Announcements > Soulstone tab.
 --
 -- History: this was its own "Cooldowns" page until v0.29, then the top half of the Soulstone page,
 -- and came back out as its own page when it grew past soulstones.
@@ -2093,7 +2128,7 @@ do
     -- ── HUD ──
     Heading("HUD", -6)
     Caption("Your spells and items, exact to the second (your demon's too, with Exclude pet CDs off). " ..
-            "Group soulstones have their own section, switched on the Announcements > Soulstone tab.", -26)
+            "Group soulstones have a HUD of their own, set up on the Announcements > Soulstone tab.", -26)
     -- Two rows: what the HUD shows (Show HUD, Exclude pet CDs), then when it opens on its own.
     CheckRow("Show HUD", -66,
         function() return WQ.IsTrackerHUDOpen() end, function(v) WQ.SetTrackerHUDOpen(v) end, COL1)
@@ -2984,27 +3019,26 @@ do
     openMacros:SetScript("OnClick", OpenMacroUI)
 end
 
--- ── Cooldowns HUD (party/raid) ───────────────────────────────────────────────
--- Standalone movable HUD in two sections, kept visibly apart (user call):
---   Soulstones     - each group warlock's soulstone cooldown ("Ready" or a live countdown, fed by the
---                    core tracker's comms + combat-log fallback), then who currently HAS one. Shown
---                    while the Soulstone tab's "Show the group's soulstones" box is ticked.
---   Your Cooldowns - every cooldown the player has running, from the core's general scan.
--- Soulstones goes FIRST on purpose: it is a fixed set of rows, while the own list grows and shrinks
--- with every cast, so this order keeps the soulstone rows still. Section headings only appear when both
--- sections do; with the soulstone section off the HUD is just your own list.
--- Structure vs. ticking are split: WQ.RefreshTrackerHUD() rebuilds rows only on roster/comms/cast
--- events or when the own-cooldown SET changes; the OnUpdate tick just re-reads each visible row's
--- remaining seconds from the core's stores (no roster scan, no spellbook walk).
+-- ── Cooldowns HUD + Soulstone HUD (party/raid) ───────────────────────────────
+-- Two standalone movable list HUDs built from ONE shell (MakeListHUD below): frame, header, padlock,
+-- close X, drag, saved position, row factory and the auto-show visibility pass are identical, so they
+-- live in one place and each HUD only supplies its rows.
+--   Cooldowns HUD (`Warlock_Qol_Tbc_HUD`)          every cooldown the PLAYER has running, from the
+--                                                  core's general scan. Useful solo too.
+--   Soulstone HUD (`Warlock_Qol_Tbc_SoulstoneHUD`) each group warlock's soulstone cooldown, then who
+--                                                  currently HAS a soulstone. A group tool.
+-- SPLIT ON PURPOSE (user call, 2026-10): the two briefly shared one HUD as two sections, but someone
+-- may want their own cooldowns up at all times, solo included, while soulstones only mean anything in
+-- a party or raid. Separate frames let each have its own Show HUD, auto-show and opacity. The Cooldowns
+-- HUD keeps the original frame name and `trackerHUD` saved position, so an existing HUD stays put.
+-- Structure vs. ticking are split on both: Refresh rebuilds rows on events only; OnUpdate re-reads each
+-- visible row's remaining seconds from the core's stores.
 do
-    local HUD_W        = 190
     local HUD_ROW_H    = 22
     local HUD_HEADER_H = 20
     local HUD_PAD      = 6
     local HUD_BODY_TOP = HUD_PAD + HUD_HEADER_H + 4   -- y-offset of the first row below the header
-    local HUD_SECT_H   = 16                           -- height of a section / sub-section label
-    local HUD_SECT_GAP = 6                            -- space above the second section's heading
-    local HUD_KEY      = "soulstone"                  -- the one group-tracked cooldown
+    local HUD_SECT_H   = 16                           -- height of a sub-section label
 
     -- mm:ss for a minute+, else "Ns". Only called with remaining > 0.
     local function FormatCD(sec)
@@ -3013,478 +3047,478 @@ do
         return sec .. "s"
     end
 
-    local hud = CreateFrame("Frame", "Warlock_Qol_Tbc_HUD", UIParent, "BackdropTemplate")
-    hud:SetSize(HUD_W, HUD_BODY_TOP + HUD_ROW_H + HUD_PAD)
-    hud:SetPoint("CENTER", UIParent, "CENTER", 320, 80)   -- default; user drags, then persisted
-    hud:SetFrameStrata("MEDIUM")
-    hud:SetClampedToScreen(true)
-    ApplyFlat(hud, THEME.bg, true)
-    RegisterFill(hud, THEME.bg, WQ.GetTrackerOpacity)   -- own opacity value (Cooldowns page); border solid
-    hud:Hide()
-
-    -- Header strip: title (also the visual grip). No mouse, so drags fall through to the hud frame.
-    local hudHeader = CreateFrame("Frame", nil, hud, "BackdropTemplate")
-    hudHeader:SetPoint("TOPLEFT",  hud, "TOPLEFT",   HUD_PAD, -HUD_PAD)
-    hudHeader:SetPoint("TOPRIGHT", hud, "TOPRIGHT", -HUD_PAD, -HUD_PAD)
-    hudHeader:SetHeight(HUD_HEADER_H)
-    ApplyFlat(hudHeader, THEME.panel, true)
-
-    local hudTitle = hudHeader:CreateFontString(nil, "OVERLAY")
-    ApplyFont(hudTitle, "caption")
-    hudTitle:SetPoint("LEFT", hudHeader, "LEFT", 6, 0)
-    AccentText(hudTitle)
-    hudTitle:SetText("Cooldowns")
-
-    -- Persistence (position + shown + locked) — a top-level DB table like `ui`.
-    local function HUDdb()
-        local db = Warlock_Qol_Tbc_DB
-        if not db then return nil end
-        db.trackerHUD = db.trackerHUD or {}
-        return db.trackerHUD
-    end
-    local function SaveHUDPlacement()
-        local d = HUDdb(); if not d then return end
-        local point, _, relPoint, x, y = hud:GetPoint()
-        d.point, d.relPoint, d.x, d.y = point, relPoint, x, y
-    end
-    local function RestoreHUDPlacement()
-        local d = HUDdb(); if not d or not d.point then return end
-        hud:ClearAllPoints()
-        hud:SetPoint(d.point, UIParent, d.relPoint, d.x, d.y)
+    -- CTRL+Click announces are GROUP ONLY: RAID else PARTY, nil solo (never /say a callout to strangers).
+    local function GroupChannel()
+        return IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or nil)
     end
 
-    -- Whole frame draggable (unless locked); saves position on release.
-    hud:SetMovable(true)
-    hud:EnableMouse(true)
-    hud:RegisterForDrag("LeftButton")
-    hud:SetScript("OnDragStart", function()
-        local d = HUDdb()
-        if not (d and d.locked) then hud:StartMoving() end
-    end)
-    hud:SetScript("OnDragStop", function() hud:StopMovingOrSizing(); SaveHUDPlacement() end)
+    -- "In a raid/party" means inside the raid/party INSTANCE (matches the consumables HUD), not merely a
+    -- raid/party group: GROUP_ROSTER_UPDATE fires at group-join in the world (easily missed/dismissed), so
+    -- the auto-show transition is keyed off zoning into the instance (the core's PLAYER_ENTERING_WORLD).
+    local function InRaidInstance()  return IsInRaid() and select(2, IsInInstance()) == "raid" end
+    local function InPartyInstance() return IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" end
 
-    -- Close button at the header's far right (like the main window's). Closes the HUD (same as unticking "Show HUD").
-    local closeBtn = CreateFrame("Button", nil, hudHeader, "BackdropTemplate")
-    closeBtn:SetSize(16, 16)
-    closeBtn:SetPoint("RIGHT", hudHeader, "RIGHT", -3, 0)
-    ApplyFlat(closeBtn, THEME.field, true)
-    local closeX = closeBtn:CreateFontString(nil, "OVERLAY")
-    ApplyFont(closeX, "body")
-    closeX:SetPoint("CENTER")
-    closeX:SetText("X")
-    AccentText(closeX)
-    closeBtn:SetScript("OnEnter", function(self)
-        self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-        closeX:SetTextColor(0.78, 0.78, 1.0)
-    end)
-    closeBtn:SetScript("OnLeave", function(self)
-        self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
-        closeX:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-    end)
-    closeBtn:SetScript("OnClick", function() if WQ.DismissTrackerHUD then WQ.DismissTrackerHUD() end end)
+    -- Build one list HUD. `spec`:
+    --   name, title, width, x, y      frame name, header text, fixed width, default CENTER offset
+    --   dbKey                          top-level Warlock_Qol_Tbc_DB table for { point.., open, locked }
+    --   opacity                        that HUD's WQ.Get*Opacity (registered fill)
+    --   enabled, showRaid, showParty   getters: the feature switch and the two auto-show flags
+    --   sync                           called after every visibility pass (keeps "Show HUD" boxes in step)
+    -- Returns a shell; the caller sets shell.Refresh (row rebuild) before shell.Init runs at login.
+    local function MakeListHUD(spec)
+        local shell = {}
+        local hud = CreateFrame("Frame", spec.name, UIParent, "BackdropTemplate")
+        hud:SetSize(spec.width, HUD_BODY_TOP + HUD_ROW_H + HUD_PAD)
+        hud:SetPoint("CENTER", UIParent, "CENTER", spec.x, spec.y)   -- default; user drags, then persisted
+        hud:SetFrameStrata("MEDIUM")
+        hud:SetClampedToScreen(true)
+        ApplyFlat(hud, THEME.bg, true)
+        RegisterFill(hud, THEME.bg, spec.opacity)   -- own opacity value; border solid
+        hud:Hide()
+        shell.hud = hud
 
-    -- Padlock toggle left of the close button: lock/unlock the HUD position. The Blizzard padlock art is
-    -- desaturated + tinted (accent=locked, dim=unlocked). A click (not a drag), so it works while locked.
-    local lockBtn = CreateFrame("Button", nil, hudHeader, "BackdropTemplate")
-    lockBtn:SetSize(16, 16)
-    lockBtn:SetPoint("RIGHT", closeBtn, "LEFT", -3, 0)   -- sits just left of the close button
-    ApplyFlat(lockBtn, THEME.field, true)
-    local lockTex = lockBtn:CreateTexture(nil, "ARTWORK")
-    lockTex:SetPoint("TOPLEFT",     lockBtn, "TOPLEFT",      2, -2)
-    lockTex:SetPoint("BOTTOMRIGHT", lockBtn, "BOTTOMRIGHT", -2,  2)
-    if lockTex.SetDesaturated then lockTex:SetDesaturated(true) end
-    local function RefreshLockIcon()
-        local locked = HUDdb() and HUDdb().locked
-        lockTex:SetTexture(locked and "Interface\\Buttons\\LockButton-Locked-Up"
-                                   or "Interface\\Buttons\\LockButton-Unlocked-Up")
-        local c = locked and THEME.accent or THEME.textDim
-        lockTex:SetVertexColor(c[1], c[2], c[3])
-    end
-    -- Re-tint the padlock (accent when locked) and rebuild rows (own/selected row name uses accent) on
-    -- an accent change; RefreshTrackerHUD is defined later, so guard for the build-time first run.
-    RegisterAccent(function()
-        RefreshLockIcon()
-        if WQ.RefreshTrackerHUD then WQ.RefreshTrackerHUD() end
-    end)
-    lockBtn:SetScript("OnClick", function()
-        local d = HUDdb()
-        WQ.SetTrackerHUDLocked(not (d and d.locked))   -- setter repaints the icon
-    end)
-    lockBtn:SetScript("OnEnter", function(self)
-        self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText((HUDdb() and HUDdb().locked) and "Unlock HUD position" or "Lock HUD position",
-            THEME.text[1], THEME.text[2], THEME.text[3])
-        GameTooltip:Show()
-    end)
-    lockBtn:SetScript("OnLeave", function(self)
-        self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
-        GameTooltip:Hide()
-    end)
+        -- Header strip: title (also the visual grip). No mouse, so drags fall through to the hud frame.
+        local header = CreateFrame("Frame", nil, hud, "BackdropTemplate")
+        header:SetPoint("TOPLEFT",  hud, "TOPLEFT",   HUD_PAD, -HUD_PAD)
+        header:SetPoint("TOPRIGHT", hud, "TOPRIGHT", -HUD_PAD, -HUD_PAD)
+        header:SetHeight(HUD_HEADER_H)
+        ApplyFlat(header, THEME.panel, true)
+        local title = header:CreateFontString(nil, "OVERLAY")
+        ApplyFont(title, "caption")
+        title:SetPoint("LEFT", header, "LEFT", 6, 0)
+        AccentText(title)
+        title:SetText(spec.title)
 
-    -- Announce a warlock's cooldown to the group (e.g. "Rimm: Soulstone CD - 17:34 remaining" / "… - Ready").
-    -- GROUP ONLY: RAID else PARTY; solo does nothing (never /say a group callout to strangers).
-    -- The "CD" wording comes from the tracked cooldown's label (so it's clearly the cooldown, not a buff).
-    local function AnnounceCooldown(name)
-        if not name or name == "" then return end
-        local channel = IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or nil)
-        if not channel then return end   -- not grouped: don't announce at all
-        local spec  = WQ.TRACKED_COOLDOWNS and WQ.TRACKED_COOLDOWNS[HUD_KEY]
-        local label = (spec and spec.label) or HUD_KEY
-        local rem   = (WQ.GetTrackerRemaining and WQ.GetTrackerRemaining(HUD_KEY, name)) or 0
-        local msg
-        if rem and rem > 0 then
-            msg = ("%s: %s - %s remaining"):format(name, label, FormatCD(rem))
-        else
-            msg = ("%s: %s - Ready"):format(name, label)
+        -- Persistence (position + shown + locked) in a top-level DB table like `ui`.
+        local function db()
+            local root = Warlock_Qol_Tbc_DB
+            if not root then return nil end
+            root[spec.dbKey] = root[spec.dbKey] or {}
+            return root[spec.dbKey]
         end
-        SendChatMessage(msg, channel)
-    end
-
-    -- Announce that a player currently HAS a soulstone (the buff), fired by CTRL+Click on a
-    -- "Soulstones Out" row. Group-only, like AnnounceCooldown. Reads the live remaining time.
-    local function AnnounceSoulstone(name)
-        if not name or name == "" then return end
-        local channel = IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or nil)
-        if not channel then return end
-        local rem = WQ.GetSoulstoneRemaining and WQ.GetSoulstoneRemaining(name)
-        local msg
-        if rem and rem > 0 then
-            msg = ("%s has a Soulstone - %s remaining"):format(name, FormatCD(rem))
-        else
-            msg = ("%s has a Soulstone"):format(name)
+        local function SavePlacement()
+            local d = db(); if not d then return end
+            local point, _, relPoint, x, y = hud:GetPoint()
+            d.point, d.relPoint, d.x, d.y = point, relPoint, x, y
         end
-        SendChatMessage(msg, channel)
-    end
-
-    -- Announce one of the player's own cooldowns (e.g. "Death Coil - 1:23 remaining"), from CTRL+Click
-    -- on a "Your Cooldowns" row. Group-only, like the two above.
-    local function AnnounceOwn(name)
-        if not name or name == "" then return end
-        local channel = IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or nil)
-        if not channel then return end
-        local rem = WQ.GetOwnCooldownRemaining and WQ.GetOwnCooldownRemaining(name) or 0
-        if rem > 0 then
-            SendChatMessage(("%s - %s remaining"):format(name, FormatCD(rem)), channel)
-        else
-            SendChatMessage(("%s - Ready"):format(name), channel)
+        local function RestorePlacement()
+            local d = db(); if not d or not d.point then return end
+            hud:ClearAllPoints()
+            hud:SetPoint(d.point, UIParent, d.relPoint, d.x, d.y)
         end
-    end
+        local function StartDrag()
+            local d = db()
+            if not (d and d.locked) then hud:StartMoving() end
+        end
+        local function StopDrag() hud:StopMovingOrSizing(); SavePlacement() end
 
-    -- Shared row builder. Each row: [icon] [name] … [timer]. Rows are Buttons: a plain drag moves the
-    -- HUD, CTRL+Click runs onCtrlClick(self.rowName). Used by every row kind on the HUD.
-    local function MakeRow(onCtrlClick)
-        local row = CreateFrame("Button", nil, hud)
-        row:SetHeight(HUD_ROW_H)
-        row:EnableMouse(true)
+        -- Whole frame draggable (unless locked); saves position on release.
+        hud:SetMovable(true)
+        hud:EnableMouse(true)
+        hud:RegisterForDrag("LeftButton")
+        hud:SetScript("OnDragStart", StartDrag)
+        hud:SetScript("OnDragStop", StopDrag)
 
-        -- Dragging a row moves the whole HUD (unless locked), matching the rest of the frame.
-        row:RegisterForDrag("LeftButton")
-        row:SetScript("OnDragStart", function()
-            local dd = HUDdb()
-            if not (dd and dd.locked) then hud:StartMoving() end
+        -- Close button at the header's far right. Closes the HUD (same as unticking "Show HUD").
+        local closeBtn = CreateFrame("Button", nil, header, "BackdropTemplate")
+        closeBtn:SetSize(16, 16)
+        closeBtn:SetPoint("RIGHT", header, "RIGHT", -3, 0)
+        ApplyFlat(closeBtn, THEME.field, true)
+        local closeX = closeBtn:CreateFontString(nil, "OVERLAY")
+        ApplyFont(closeX, "body")
+        closeX:SetPoint("CENTER")
+        closeX:SetText("X")
+        AccentText(closeX)
+        closeBtn:SetScript("OnEnter", function(self)
+            self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+            closeX:SetTextColor(0.78, 0.78, 1.0)
         end)
-        row:SetScript("OnDragStop", function() hud:StopMovingOrSizing(); SaveHUDPlacement() end)
-        -- CTRL+Click announces this row; a plain click does nothing.
-        row:SetScript("OnClick", function(self)
-            if IsControlKeyDown() and onCtrlClick then onCtrlClick(self.rowName) end
+        closeBtn:SetScript("OnLeave", function(self)
+            self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
+            closeX:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
         end)
-        -- Subtle accent wash on hover so the rows read as interactive.
-        row:SetHighlightTexture("Interface\\Buttons\\WHITE8X8")
-        local hl = row:GetHighlightTexture()
-        if hl then hl:SetVertexColor(THEME.accent[1], THEME.accent[2], THEME.accent[3], 0.12) end
+        closeBtn:SetScript("OnClick", function() shell.SetOpen(false) end)
 
-        local icon = row:CreateTexture(nil, "ARTWORK")
-        icon:SetSize(HUD_ROW_H - 8, HUD_ROW_H - 8)
-        icon:SetPoint("LEFT", row, "LEFT", 2, 0)
-        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)   -- trim the default icon border
-        row.icon = icon
-
-        local timer = row:CreateFontString(nil, "OVERLAY")
-        ApplyFont(timer, "caption")
-        timer:SetPoint("RIGHT", row, "RIGHT", -2, 0)
-        timer:SetJustifyH("RIGHT")
-        row.timer = timer
-
-        local name = row:CreateFontString(nil, "OVERLAY")
-        ApplyFont(name, "caption")
-        name:SetPoint("LEFT",  icon,  "RIGHT", 5, 0)
-        name:SetPoint("RIGHT", timer, "LEFT", -4, 0)   -- clip so a long name can't overrun the timer
-        name:SetJustifyH("LEFT")
-        row.name = name
-
-        return row
-    end
-
-    -- Row pools: warlock soulstone cooldowns, who currently holds a stone, and the player's own cooldowns.
-    local hudRows = {}
-    local ssRows  = {}
-    local ownRows = {}
-    local function MakeHUDRow() return MakeRow(AnnounceCooldown) end
-    local function MakeSsRow()  return MakeRow(AnnounceSoulstone) end
-    local function MakeOwnRow() return MakeRow(AnnounceOwn) end
-
-    -- Dim italic placeholder line (a section with nothing in it). Positioned in Refresh.
-    local function MakeEmptyLine(text)
-        local fs = hud:CreateFontString(nil, "OVERLAY")
-        ApplyFontItalic(fs, "small")
-        fs:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
-        fs:SetText(text)
-        fs:Hide()
-        return fs
-    end
-    local hudEmpty = MakeEmptyLine("No warlocks in group")
-    local ownEmpty = MakeEmptyLine("No cooldowns running")
-
-    -- Section heading: an accent label with a rule under it, so the two sections read as separate
-    -- blocks rather than one list. Placed (or hidden) by Refresh via :Place(y) / :Hide().
-    local function MakeSection(text)
-        local label = hud:CreateFontString(nil, "OVERLAY")
-        ApplyFont(label, "small")
-        label:SetJustifyH("LEFT")
-        AccentText(label)
-        label:SetText(text)
-        local rule = hud:CreateTexture(nil, "ARTWORK")
-        rule:SetColorTexture(THEME.border[1], THEME.border[2], THEME.border[3], 1)
-        rule:SetHeight(1)
-        local sect = {}
-        function sect:Place(y)
-            label:ClearAllPoints()
-            label:SetPoint("TOPLEFT", hud, "TOPLEFT", HUD_PAD + 2, y - 2)
-            rule:ClearAllPoints()
-            rule:SetPoint("TOPLEFT",  hud, "TOPLEFT",   HUD_PAD, y - HUD_SECT_H + 1)
-            rule:SetPoint("TOPRIGHT", hud, "TOPRIGHT", -HUD_PAD, y - HUD_SECT_H + 1)
-            label:Show(); rule:Show()
+        -- Padlock left of the close button: lock/unlock the position. The Blizzard padlock art is
+        -- desaturated + tinted (accent = locked, dim = unlocked). A click, so it works while locked.
+        local lockBtn = CreateFrame("Button", nil, header, "BackdropTemplate")
+        lockBtn:SetSize(16, 16)
+        lockBtn:SetPoint("RIGHT", closeBtn, "LEFT", -3, 0)
+        ApplyFlat(lockBtn, THEME.field, true)
+        local lockTex = lockBtn:CreateTexture(nil, "ARTWORK")
+        lockTex:SetPoint("TOPLEFT",     lockBtn, "TOPLEFT",      2, -2)
+        lockTex:SetPoint("BOTTOMRIGHT", lockBtn, "BOTTOMRIGHT", -2,  2)
+        if lockTex.SetDesaturated then lockTex:SetDesaturated(true) end
+        local function RefreshLockIcon()
+            local locked = shell.IsLocked()
+            lockTex:SetTexture(locked and "Interface\\Buttons\\LockButton-Locked-Up"
+                                       or "Interface\\Buttons\\LockButton-Unlocked-Up")
+            local c = locked and THEME.accent or THEME.textDim
+            lockTex:SetVertexColor(c[1], c[2], c[3])
         end
-        function sect:Hide() label:Hide(); rule:Hide() end
-        sect:Hide()
-        return sect
+        lockBtn:SetScript("OnClick", function() shell.SetLocked(not shell.IsLocked()) end)
+        lockBtn:SetScript("OnEnter", function(self)
+            self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:SetText(shell.IsLocked() and "Unlock HUD position" or "Lock HUD position",
+                THEME.text[1], THEME.text[2], THEME.text[3])
+            GameTooltip:Show()
+        end)
+        lockBtn:SetScript("OnLeave", function(self)
+            self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
+            GameTooltip:Hide()
+        end)
+        -- Row factory. Each row: [icon] [name] … [timer]. Rows are Buttons: a plain drag moves the HUD,
+        -- CTRL+Click runs onCtrlClick(self.rowName).
+        function shell.MakeRow(onCtrlClick)
+            local row = CreateFrame("Button", nil, hud)
+            row:SetHeight(HUD_ROW_H)
+            row:EnableMouse(true)
+            row:RegisterForDrag("LeftButton")
+            row:SetScript("OnDragStart", StartDrag)
+            row:SetScript("OnDragStop", StopDrag)
+            row:SetScript("OnClick", function(self)
+                if IsControlKeyDown() and onCtrlClick then onCtrlClick(self.rowName) end
+            end)
+            -- Subtle accent wash on hover so the rows read as interactive.
+            row:SetHighlightTexture("Interface\\Buttons\\WHITE8X8")
+            local hl = row:GetHighlightTexture()
+            if hl then hl:SetVertexColor(THEME.accent[1], THEME.accent[2], THEME.accent[3], 0.12) end
+
+            local icon = row:CreateTexture(nil, "ARTWORK")
+            icon:SetSize(HUD_ROW_H - 8, HUD_ROW_H - 8)
+            icon:SetPoint("LEFT", row, "LEFT", 2, 0)
+            icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)   -- trim the default icon border
+            row.icon = icon
+
+            local timer = row:CreateFontString(nil, "OVERLAY")
+            ApplyFont(timer, "caption")
+            timer:SetPoint("RIGHT", row, "RIGHT", -2, 0)
+            timer:SetJustifyH("RIGHT")
+            row.timer = timer
+
+            local name = row:CreateFontString(nil, "OVERLAY")
+            ApplyFont(name, "caption")
+            name:SetPoint("LEFT",  icon,  "RIGHT", 5, 0)
+            name:SetPoint("RIGHT", timer, "LEFT", -4, 0)   -- clip so a long name can't overrun the timer
+            name:SetJustifyH("LEFT")
+            row.name = name
+            return row
+        end
+
+        -- Place row i of `pool` (made by `make`) at y. Own name tinted accent, others off-white.
+        function shell.PlaceRow(pool, i, make, y, icon, name, isPlayer)
+            local row = pool[i] or make()
+            pool[i] = row
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT",  hud, "TOPLEFT",   HUD_PAD, y)
+            row:SetPoint("TOPRIGHT", hud, "TOPRIGHT", -HUD_PAD, y)
+            row.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+            row.name:SetText(name)
+            row.rowName = name   -- CTRL+Click announce reads this
+            local c = isPlayer and THEME.accent or THEME.text
+            row.name:SetTextColor(c[1], c[2], c[3])
+            row:Show()
+            return row
+        end
+
+        -- Dim label (an empty-state line in italics, or a sub-section heading). Placed by the caller.
+        function shell.MakeLabel(text, italic)
+            local fs = hud:CreateFontString(nil, "OVERLAY")
+            if italic then ApplyFontItalic(fs, "small") else ApplyFont(fs, "small") end
+            fs:SetJustifyH("LEFT")
+            fs:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+            fs:SetText(text)
+            fs:Hide()
+            return fs
+        end
+        function shell.PlaceLabel(fs, y)
+            fs:ClearAllPoints()
+            fs:SetPoint("TOPLEFT", hud, "TOPLEFT", HUD_PAD + 2, y)
+            fs:Show()
+        end
+
+        -- Visibility = ONE persisted flag, `open` (Show HUD + the X set it directly, so they always
+        -- take effect). Each auto-show toggle drives that flag on its own instance transition: entering
+        -- opens, leaving closes. Called on the feature flag, the toggles, roster and zone changes.
+        local wasInRaid, wasInParty = false, false
+        function shell.ApplyVisibility()
+            local d = db()
+            if not d then hud:Hide(); return end
+            local nowRaid = InRaidInstance()
+            if nowRaid ~= wasInRaid then
+                if spec.showRaid() then d.open = nowRaid and true or false end
+                wasInRaid = nowRaid
+            end
+            local nowParty = InPartyInstance()
+            if nowParty ~= wasInParty then
+                if spec.showParty() then d.open = nowParty and true or false end
+                wasInParty = nowParty
+            end
+            -- The master switch and the feature's own switch both gate the HUD.
+            if WQ.IsMasterEnabled() and spec.enabled() and d.open then
+                hud:Show(); shell.Refresh()
+            else
+                hud:Hide()
+            end
+            spec.sync()   -- keep the page's "Show HUD" box in step (the X / an auto-show may have moved it)
+        end
+
+        function shell.IsOpen() local d = db(); return d and d.open or false end
+        function shell.SetOpen(on)
+            local d = db(); if d then d.open = on and true or false end
+            shell.ApplyVisibility()
+        end
+        function shell.IsLocked() local d = db(); return d and d.locked or false end
+        function shell.SetLocked(on)
+            local d = db(); if d then d.locked = on and true or false end
+            RefreshLockIcon()
+        end
+        -- PLAYER_LOGIN (DB ready): restore position + lock icon, then apply visibility.
+        function shell.Init()
+            RestorePlacement()
+            RefreshLockIcon()
+            shell.ApplyVisibility()
+        end
+
+        -- Re-tint the padlock and rebuild rows (own-name rows use the accent) on an accent change.
+        -- Registered LAST: RegisterAccent runs the function immediately, and it needs shell.IsLocked.
+        RegisterAccent(function()
+            RefreshLockIcon()
+            if shell.Refresh then shell.Refresh() end
+        end)
+        return shell
     end
-    local ssSection  = MakeSection("Soulstones")
-    local ownSection = MakeSection("Your Cooldowns")
 
-    -- Dim sub-heading inside the Soulstones section, over who currently HAS one. Positioned in Refresh.
-    local ssHeader = hud:CreateFontString(nil, "OVERLAY")
-    ApplyFont(ssHeader, "small")
-    ssHeader:SetJustifyH("LEFT")
-    ssHeader:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
-    ssHeader:SetText("Soulstone Active")
-    ssHeader:Hide()
+    -- ── Cooldowns HUD: the player's own cooldowns ──
+    do
+        local shell = MakeListHUD({
+            name = "Warlock_Qol_Tbc_HUD", title = "Cooldowns", width = 190, x = 320, y = 80,
+            dbKey = "trackerHUD", opacity = WQ.GetTrackerOpacity,
+            enabled   = function() return WQ.IsTrackerEnabled() end,
+            showRaid  = function() return WQ.IsTrackerShowRaid() end,
+            showParty = function() return WQ.IsTrackerShowParty() end,
+            sync      = function() if WQ.SyncTrackerPage then WQ.SyncTrackerPage() end end,
+        })
+        local hud = shell.hud
 
-    -- Active rows shown: { row, name }. The tick reads each name's remaining time without a rebuild.
-    local hudActive = {}   -- CD rows
-    local ssActive  = {}   -- soulstone rows
-    local ownActive = {}   -- own-cooldown rows
-
-    -- Repaint every visible timer. Returns true when an own cooldown has run out, so the tick can
-    -- rebuild and drop its row (an own row disappears when done, unlike the soulstone "Ready" rows).
-    local function UpdateHUDTimers()
-        local expired = false
-        for _, a in ipairs(ownActive) do
-            local rem = WQ.GetOwnCooldownRemaining and WQ.GetOwnCooldownRemaining(a.name) or 0
+        -- "Death Coil - 1:23 remaining", from CTRL+Click on a row.
+        local function AnnounceOwn(name)
+            if not name or name == "" then return end
+            local channel = GroupChannel()
+            if not channel then return end
+            local rem = WQ.GetOwnCooldownRemaining and WQ.GetOwnCooldownRemaining(name) or 0
             if rem > 0 then
-                a.row.timer:SetText(FormatCD(rem))
-                a.row.timer:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])
+                SendChatMessage(("%s - %s remaining"):format(name, FormatCD(rem)), channel)
             else
-                expired = true
+                SendChatMessage(("%s - Ready"):format(name), channel)
             end
         end
-        for _, a in ipairs(hudActive) do
-            local rem = WQ.GetTrackerRemaining and WQ.GetTrackerRemaining(HUD_KEY, a.name) or 0
-            if rem and rem > 0 then
-                a.row.timer:SetText(FormatCD(rem))
-                a.row.timer:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])  -- on cooldown = red
-            else
-                a.row.timer:SetText("Ready")
-                a.row.timer:SetTextColor(0.30, 0.80, 0.30)                                   -- ready = green
-            end
-        end
-        for _, a in ipairs(ssActive) do
-            local rem = WQ.GetSoulstoneRemaining and WQ.GetSoulstoneRemaining(a.name)
-            if rem == nil then
-                a.row.timer:SetText("")                                              -- gone; pruned next rebuild
-            elseif rem > 0 then
-                a.row.timer:SetText(FormatCD(rem))
-                a.row.timer:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3]) -- buff up = neutral/white
-            else
-                a.row.timer:SetText("Active")                                         -- present, unknown duration
-                a.row.timer:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-            end
-        end
-        return expired
-    end
 
-    -- Place one row at y (pool `pool`, made by `make`), returning it. Shared by the three row kinds.
-    local function PlaceRow(pool, i, make, y, icon, name, isPlayer)
-        local row = pool[i] or make()
-        pool[i] = row
-        row:ClearAllPoints()
-        row:SetPoint("TOPLEFT",  hud, "TOPLEFT",   HUD_PAD, y)
-        row:SetPoint("TOPRIGHT", hud, "TOPRIGHT", -HUD_PAD, y)
-        row.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
-        row.name:SetText(name)
-        row.rowName = name   -- CTRL+Click announce reads this
-        -- Own name tinted accent; others off-white, so you spot yourself.
-        local c = isPlayer and THEME.accent or THEME.text
-        row.name:SetTextColor(c[1], c[2], c[3])
-        row:Show()
-        return row
-    end
+        local rows, active = {}, {}
+        local function MakeOwnRow() return shell.MakeRow(AnnounceOwn) end
+        local empty = shell.MakeLabel("No cooldowns running", true)
 
-    -- Rebuild the rows. Called on membership/data changes only, never per tick.
-    function WQ.RefreshTrackerHUD()
-        if not hud:IsShown() then return end
-        if WQ.RefreshActiveSoulstones then WQ.RefreshActiveSoulstones() end   -- freshen the store before we read it
-        if WQ.ScanOwnCooldowns then WQ.ScanOwnCooldowns() end                 -- no-op unless a cooldown event arrived
-        local spec     = WQ.TRACKED_COOLDOWNS and WQ.TRACKED_COOLDOWNS[HUD_KEY]
-        local ssIcon   = spec and spec.icon
-        local showSs   = WQ.IsTrackerSoulstone and WQ.IsTrackerSoulstone()
-        wipe(hudActive); wipe(ssActive); wipe(ownActive)
-
-        local y = -HUD_BODY_TOP
-        local cdShown, ssShown, ownShown = 0, 0, 0
-
-        -- ── Section 1: Soulstones (group cooldowns, then who has one) ──
-        hudEmpty:Hide(); ssHeader:Hide()
-        if showSs then
-            ssSection:Place(y)
-            y = y - HUD_SECT_H - 2
-            for _, entry in ipairs((WQ.GetTrackerSnapshot and WQ.GetTrackerSnapshot()) or {}) do
-                cdShown = cdShown + 1
-                local row = PlaceRow(hudRows, cdShown, MakeHUDRow, y, ssIcon, entry.name, entry.isPlayer)
-                hudActive[cdShown] = { row = row, name = entry.name }
-                y = y - HUD_ROW_H
-            end
-            if cdShown == 0 then
-                hudEmpty:ClearAllPoints()
-                hudEmpty:SetPoint("TOPLEFT", hud, "TOPLEFT", HUD_PAD + 2, y - 4)
-                hudEmpty:Show()
-                y = y - HUD_ROW_H
-            end
-            -- Who currently HAS a soulstone. An empty list just draws no sub-section.
-            local ssList = (WQ.GetActiveSoulstones and WQ.GetActiveSoulstones()) or {}
-            if #ssList > 0 then
-                ssHeader:ClearAllPoints()
-                ssHeader:SetPoint("TOPLEFT", hud, "TOPLEFT", HUD_PAD + 2, y - 2)
-                ssHeader:Show()
-                y = y - HUD_SECT_H
-                for _, e in ipairs(ssList) do
-                    ssShown = ssShown + 1
-                    local row = PlaceRow(ssRows, ssShown, MakeSsRow, y, ssIcon, e.name, e.isPlayer)
-                    ssActive[ssShown] = { row = row, name = e.name }
-                    y = y - HUD_ROW_H
+        -- Repaint every timer. Returns true when a cooldown has run out, so the tick can rebuild and
+        -- drop its row (a row disappears when its cooldown is done).
+        local function UpdateTimers()
+            local expired = false
+            for _, a in ipairs(active) do
+                local rem = WQ.GetOwnCooldownRemaining and WQ.GetOwnCooldownRemaining(a.name) or 0
+                if rem > 0 then
+                    a.row.timer:SetText(FormatCD(rem))
+                    a.row.timer:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])
+                else
+                    expired = true
                 end
             end
-            y = y - HUD_SECT_GAP
-            ownSection:Place(y)
-            y = y - HUD_SECT_H - 2
-        else
-            ssSection:Hide()
-            ownSection:Hide()   -- one section on its own needs no heading
-        end
-        for i = cdShown + 1, #hudRows do hudRows[i]:Hide() end
-        for i = ssShown + 1, #ssRows  do ssRows[i]:Hide()  end
-
-        -- ── Section 2: Your Cooldowns ──
-        for _, c in ipairs((WQ.GetOwnCooldowns and WQ.GetOwnCooldowns()) or {}) do
-            ownShown = ownShown + 1
-            local row = PlaceRow(ownRows, ownShown, MakeOwnRow, y, c.icon, c.name, false)
-            ownActive[ownShown] = { row = row, name = c.name }
-            y = y - HUD_ROW_H
-        end
-        for i = ownShown + 1, #ownRows do ownRows[i]:Hide() end
-        if ownShown == 0 then
-            ownEmpty:ClearAllPoints()
-            ownEmpty:SetPoint("TOPLEFT", hud, "TOPLEFT", HUD_PAD + 2, y - 4)
-            ownEmpty:Show()
-            y = y - HUD_ROW_H
-        else
-            ownEmpty:Hide()
+            return expired
         end
 
-        hud:SetHeight(-y + HUD_PAD)   -- content bottom (-y) plus bottom padding
-        UpdateHUDTimers()             -- paint immediately; don't wait for the next tick
+        function shell.Refresh()
+            if not hud:IsShown() then return end
+            if WQ.ScanOwnCooldowns then WQ.ScanOwnCooldowns() end   -- no-op unless a cooldown event arrived
+            wipe(active)
+            local y, shown = -HUD_BODY_TOP, 0
+            for _, c in ipairs((WQ.GetOwnCooldowns and WQ.GetOwnCooldowns()) or {}) do
+                shown = shown + 1
+                active[shown] = { row = shell.PlaceRow(rows, shown, MakeOwnRow, y, c.icon, c.name, false), name = c.name }
+                y = y - HUD_ROW_H
+            end
+            for i = shown + 1, #rows do rows[i]:Hide() end
+            if shown == 0 then
+                shell.PlaceLabel(empty, y - 4)
+                y = y - HUD_ROW_H
+            else
+                empty:Hide()
+            end
+            hud:SetHeight(-y + HUD_PAD)   -- content bottom (-y) plus bottom padding
+            UpdateTimers()                -- paint immediately; don't wait for the next tick
+        end
+
+        -- Every 0.2s: run the own-cooldown scan if a cooldown event arrived (coalesced here, since
+        -- SPELL_UPDATE_COOLDOWN fires on every cast) and repaint; rebuild when the set changed or a
+        -- cooldown ran out.
+        local acc = 0
+        hud:SetScript("OnUpdate", function(_, elapsed)
+            acc = acc + elapsed
+            if acc < 0.2 then return end
+            acc = 0
+            if (WQ.ScanOwnCooldowns and WQ.ScanOwnCooldowns()) or UpdateTimers() then shell.Refresh() end
+        end)
+
+        WQ.RefreshTrackerHUD          = shell.Refresh
+        WQ.UpdateTrackerHUDVisibility = shell.ApplyVisibility
+        WQ.IsTrackerHUDOpen           = shell.IsOpen
+        WQ.SetTrackerHUDOpen          = shell.SetOpen
+        WQ.IsTrackerHUDLocked         = shell.IsLocked
+        WQ.SetTrackerHUDLocked        = shell.SetLocked
+        WQ.InitTrackerHUD             = shell.Init
+        function WQ.ToggleTrackerHUD()  shell.SetOpen(not shell.IsOpen()) end
+        function WQ.DismissTrackerHUD() shell.SetOpen(false) end
     end
 
-    -- Live tick: every 0.2s repaint the countdowns (cheap store reads) and run the own-cooldown scan if
-    -- a cooldown event has arrived (the scan is coalesced here, since SPELL_UPDATE_COOLDOWN fires on every
-    -- cast); rebuild when the set of own cooldowns changed or one ran out. Rescan the soulstone buffs on a
-    -- slower ~1s cadence (rebuilds only when the set of stoned players changes).
-    local acc, scanAcc = 0, 0
-    hud:SetScript("OnUpdate", function(_, elapsed)
-        scanAcc = scanAcc + elapsed
-        if scanAcc >= 1 then
-            scanAcc = 0
-            if WQ.RefreshActiveSoulstones and WQ.RefreshActiveSoulstones() then
-                WQ.RefreshTrackerHUD()   -- membership changed: rebuild rows
-                return
+    -- ── Soulstone HUD: the group's soulstone cooldowns, then who has one ──
+    do
+        local HUD_KEY = "soulstone"   -- the one group-tracked cooldown
+        local shell = MakeListHUD({
+            name = "Warlock_Qol_Tbc_SoulstoneHUD", title = "Soulstones", width = 172, x = 320, y = -80,
+            dbKey = "soulstoneHUD", opacity = WQ.GetSoulstoneOpacity,
+            enabled   = function() return WQ.IsSoulstoneEnabled() end,
+            showRaid  = function() return WQ.IsSoulstoneShowRaid() end,
+            showParty = function() return WQ.IsSoulstoneShowParty() end,
+            sync      = function() if WQ.SyncSoulstoneTab then WQ.SyncSoulstoneTab() end end,
+        })
+        local hud = shell.hud
+
+        -- "Rimm: Soulstone CD - 17:34 remaining" / "… - Ready". The label comes from the tracked
+        -- cooldown so it reads as the cooldown, not the buff.
+        local function AnnounceCooldown(name)
+            if not name or name == "" then return end
+            local channel = GroupChannel()
+            if not channel then return end
+            local spec  = WQ.TRACKED_COOLDOWNS and WQ.TRACKED_COOLDOWNS[HUD_KEY]
+            local label = (spec and spec.label) or HUD_KEY
+            local rem   = (WQ.GetTrackerRemaining and WQ.GetTrackerRemaining(HUD_KEY, name)) or 0
+            if rem > 0 then
+                SendChatMessage(("%s: %s - %s remaining"):format(name, label, FormatCD(rem)), channel)
+            else
+                SendChatMessage(("%s: %s - Ready"):format(name, label), channel)
             end
         end
-        acc = acc + elapsed
-        if acc < 0.2 then return end
-        acc = 0
-        if (WQ.ScanOwnCooldowns and WQ.ScanOwnCooldowns()) or UpdateHUDTimers() then
-            WQ.RefreshTrackerHUD()
+
+        -- "<name> has a Soulstone - 12:04 remaining", from CTRL+Click on a "Soulstone Active" row.
+        local function AnnounceSoulstone(name)
+            if not name or name == "" then return end
+            local channel = GroupChannel()
+            if not channel then return end
+            local rem = WQ.GetSoulstoneRemaining and WQ.GetSoulstoneRemaining(name)
+            if rem and rem > 0 then
+                SendChatMessage(("%s has a Soulstone - %s remaining"):format(name, FormatCD(rem)), channel)
+            else
+                SendChatMessage(("%s has a Soulstone"):format(name), channel)
+            end
         end
-    end)
 
-    -- Visibility = ONE persisted flag, trackerHUD.open (the "Show HUD" toggle + the X button set it
-    -- directly, so Show HUD always takes effect). The "Auto-show in raid" / "Auto-show in party" toggles
-    -- each drive that flag on their instance transition: entering opens, leaving closes.
-    -- "In a raid/party" here means inside the raid/party INSTANCE (matches the consumables HUD), not merely
-    -- a raid/party group — GROUP_ROSTER_UPDATE fires at group-join in the world (easily missed/dismissed),
-    -- so the transition is keyed off zoning into the instance instead (driven by the core's PLAYER_ENTERING_WORLD).
-    local function InRaidInstance()  return IsInRaid() and select(2, IsInInstance()) == "raid" end
-    -- Party dungeon = a party group (NOT a raid) inside a 5-man instance. Mirrors the raid check.
-    local function InPartyInstance() return IsInGroup() and not IsInRaid() and select(2, IsInInstance()) == "party" end
-    local wasInRaid  = false   -- last-seen raid-instance state, to detect enter/leave transitions
-    local wasInParty = false   -- last-seen party-instance state (independent transition)
+        local cdRows, ssRows, cdActive, ssActive = {}, {}, {}, {}
+        local function MakeCdRow() return shell.MakeRow(AnnounceCooldown) end
+        local function MakeSsRow() return shell.MakeRow(AnnounceSoulstone) end
+        local empty    = shell.MakeLabel("No warlocks in group", true)
+        local ssHeader = shell.MakeLabel("Soulstone Active")   -- sub-heading over who has one
 
-    -- Recompute visibility and show/hide. Called on the feature flag, the auto-show toggles, roster
-    -- changes, and zone changes (PLAYER_ENTERING_WORLD drives the raid/party-instance transitions).
-    local function ApplyHUDVisibility()
-        local d = HUDdb()
-        if not d then hud:Hide(); return end
-        local nowRaid = InRaidInstance()
-        if nowRaid ~= wasInRaid then
-            -- Raid instance entered/left: auto-show opens on entering, closes on leaving.
-            if WQ.IsTrackerShowRaid() then d.open = nowRaid and true or false end
-            wasInRaid = nowRaid
+        local function UpdateTimers()
+            for _, a in ipairs(cdActive) do
+                local rem = WQ.GetTrackerRemaining and WQ.GetTrackerRemaining(HUD_KEY, a.name) or 0
+                if rem > 0 then
+                    a.row.timer:SetText(FormatCD(rem))
+                    a.row.timer:SetTextColor(THEME.offRed[1], THEME.offRed[2], THEME.offRed[3])  -- on cooldown = red
+                else
+                    a.row.timer:SetText("Ready")
+                    a.row.timer:SetTextColor(0.30, 0.80, 0.30)                                   -- ready = green
+                end
+            end
+            for _, a in ipairs(ssActive) do
+                local rem = WQ.GetSoulstoneRemaining and WQ.GetSoulstoneRemaining(a.name)
+                if rem == nil then
+                    a.row.timer:SetText("")                                               -- gone; pruned next rebuild
+                elseif rem > 0 then
+                    a.row.timer:SetText(FormatCD(rem))
+                    a.row.timer:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+                else
+                    a.row.timer:SetText("Active")                                          -- present, unknown duration
+                    a.row.timer:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+                end
+            end
         end
-        local nowParty = InPartyInstance()
-        if nowParty ~= wasInParty then
-            -- Party dungeon entered/left: its own auto-show toggle (off by default).
-            if WQ.IsTrackerShowParty() then d.open = nowParty and true or false end
-            wasInParty = nowParty
+
+        function shell.Refresh()
+            if not hud:IsShown() then return end
+            if WQ.RefreshActiveSoulstones then WQ.RefreshActiveSoulstones() end   -- freshen the store first
+            local spec   = WQ.TRACKED_COOLDOWNS and WQ.TRACKED_COOLDOWNS[HUD_KEY]
+            local icon   = spec and spec.icon
+            wipe(cdActive); wipe(ssActive)
+            local y, cdShown, ssShown = -HUD_BODY_TOP, 0, 0
+
+            -- Each group warlock's soulstone cooldown.
+            for _, entry in ipairs((WQ.GetTrackerSnapshot and WQ.GetTrackerSnapshot()) or {}) do
+                cdShown = cdShown + 1
+                cdActive[cdShown] = { row = shell.PlaceRow(cdRows, cdShown, MakeCdRow, y, icon, entry.name, entry.isPlayer), name = entry.name }
+                y = y - HUD_ROW_H
+            end
+            for i = cdShown + 1, #cdRows do cdRows[i]:Hide() end
+            if cdShown == 0 then
+                shell.PlaceLabel(empty, y - 4)
+                y = y - HUD_ROW_H
+            else
+                empty:Hide()
+            end
+
+            -- Who currently HAS a soulstone. An empty list draws no sub-section at all.
+            local list = (WQ.GetActiveSoulstones and WQ.GetActiveSoulstones()) or {}
+            if #list > 0 then
+                shell.PlaceLabel(ssHeader, y - 2)
+                y = y - HUD_SECT_H
+                for _, e in ipairs(list) do
+                    ssShown = ssShown + 1
+                    ssActive[ssShown] = { row = shell.PlaceRow(ssRows, ssShown, MakeSsRow, y, icon, e.name, e.isPlayer), name = e.name }
+                    y = y - HUD_ROW_H
+                end
+            else
+                ssHeader:Hide()
+            end
+            for i = ssShown + 1, #ssRows do ssRows[i]:Hide() end
+
+            hud:SetHeight(-y + HUD_PAD)
+            UpdateTimers()
         end
-        -- Master switch also gates the HUD.
-        local want = WQ.IsMasterEnabled() and WQ.IsTrackerEnabled() and d.open
-        if want then hud:Show(); WQ.RefreshTrackerHUD() else hud:Hide() end
-        -- Keep the Cooldowns page's "Show HUD" checkbox in step (X button / auto-show may have changed d.open).
-        if WQ.SyncTrackerPage then WQ.SyncTrackerPage() end
-    end
-    WQ.UpdateTrackerHUDVisibility = ApplyHUDVisibility
 
-    -- Manual open/close: the "Show HUD" toggle, the HUD's X button, and /run ToggleTrackerHUD().
-    function WQ.IsTrackerHUDOpen() local d = HUDdb(); return d and d.open or false end
-    function WQ.SetTrackerHUDOpen(on)
-        local d = HUDdb(); if d then d.open = on and true or false end
-        ApplyHUDVisibility()
-    end
-    function WQ.ToggleTrackerHUD() WQ.SetTrackerHUDOpen(not WQ.IsTrackerHUDOpen()) end
-    function WQ.DismissTrackerHUD() WQ.SetTrackerHUDOpen(false) end   -- the HUD's X button
+        -- Repaint the countdowns 5x a second; rescan the soulstone buffs on a ~1s cadence (an aura can
+        -- lapse with no event) and rebuild only when the set of stoned players changed.
+        local acc, scanAcc = 0, 0
+        hud:SetScript("OnUpdate", function(_, elapsed)
+            scanAcc = scanAcc + elapsed
+            if scanAcc >= 1 then
+                scanAcc = 0
+                if WQ.RefreshActiveSoulstones and WQ.RefreshActiveSoulstones() then
+                    shell.Refresh()
+                    return
+                end
+            end
+            acc = acc + elapsed
+            if acc < 0.2 then return end
+            acc = 0
+            UpdateTimers()
+        end)
 
-    function WQ.IsTrackerHUDLocked() local d = HUDdb(); return d and d.locked or false end
-    function WQ.SetTrackerHUDLocked(on)
-        local d = HUDdb(); if d then d.locked = on and true or false end
-        RefreshLockIcon()
-    end
-
-    -- Called from PLAYER_LOGIN (DB ready): restore position + lock icon, then apply visibility.
-    function WQ.InitTrackerHUD()
-        RestoreHUDPlacement()
-        RefreshLockIcon()
-        ApplyHUDVisibility()
+        WQ.RefreshSoulstoneHUD          = shell.Refresh
+        WQ.UpdateSoulstoneHUDVisibility = shell.ApplyVisibility
+        WQ.IsSoulstoneHUDOpen           = shell.IsOpen
+        WQ.SetSoulstoneHUDOpen          = shell.SetOpen
+        WQ.IsSoulstoneHUDLocked         = shell.IsLocked
+        WQ.SetSoulstoneHUDLocked        = shell.SetLocked
+        WQ.InitSoulstoneHUD             = shell.Init
+        function WQ.ToggleSoulstoneHUD()  shell.SetOpen(not shell.IsOpen()) end
+        function WQ.DismissSoulstoneHUD() shell.SetOpen(false) end
     end
 end
 
