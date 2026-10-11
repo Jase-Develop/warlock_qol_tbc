@@ -326,6 +326,19 @@ local toggleSpecs = {}   -- name -> { get, set } enable-toggle spec (or nil = no
 local currentPage        -- name of the page currently shown
 local UpdateNav          -- forward decl: highlights the nav item for the current page
 
+-- Top-right enable toggle: show + sync for pages that have one, else hide. Read by its OnClick. Split out
+-- of ShowPage because the Announcements page re-points its spec at whichever tab is selected, and has to
+-- re-sync the box when the tab changes without a full page switch.
+local function SyncHeaderToggle()
+    if currentToggle then
+        enableCheck:Show(); enableLabel:Show()
+        enableCheck:SetChecked(currentToggle.get and currentToggle.get() and true or false)
+        enableCheck.RefreshStateColor()  -- sync the on/off colour
+    else
+        enableCheck:Hide(); enableLabel:Hide()
+    end
+end
+
 -- Show one page (hiding the rest), update the header, refresh the nav highlight, run its refresh hook.
 local function ShowPage(name)
     -- Abandon any in-progress edit on the page we're leaving (currentPage is still the outgoing one).
@@ -343,15 +356,8 @@ local function ShowPage(name)
     -- Setting the text is enough; the divider + body reflow via anchoring (empty = rule up under title).
     pageSubtitle:SetText(subtitles[name] or "")
 
-    -- Top-right enable toggle: show + sync for pages that have one, else hide. Read by its OnClick.
     currentToggle = toggleSpecs[name]
-    if currentToggle then
-        enableCheck:Show(); enableLabel:Show()
-        enableCheck:SetChecked(currentToggle.get and currentToggle.get() and true or false)
-        enableCheck.RefreshStateColor()  -- sync the on/off colour
-    else
-        enableCheck:Hide(); enableLabel:Hide()
-    end
+    SyncHeaderToggle()
 
     if UpdateNav then UpdateNav(name) end
     local p = pages[name]
@@ -444,6 +450,26 @@ local function MakeFlatButton(parent, text, w, h)
         fs:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
     end)
     return b
+end
+
+-- Paint a row of MakeFlatButton tabs (`tabs` = key -> button): the `selected` one accent, the rest flat.
+-- Overrides each tab's OnLeave so the selected tab stays accent off-hover. Shared by the demon tabs, the
+-- Banished/Resisted tabs and the Announcements feature tabs.
+local function HighlightTabRow(tabs, selected)
+    for key, btn in pairs(tabs) do
+        local isSel = (key == selected)
+        local function paint(self)
+            if isSel then
+                self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+                self.label:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+            else
+                self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
+                self.label:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+            end
+        end
+        paint(btn)
+        btn:SetScript("OnLeave", paint)
+    end
 end
 
 -- Small square button showing one raid-marker icon (`iconN` = 1–8) for the quick-insert row.
@@ -1303,27 +1329,6 @@ do
     end
     LayoutTabs()  -- initial sizing (refreshSummon re-runs it on show / resize)
 
-    -- Highlight the active family tab accent, rest flat (override its OnLeave so it stays accent off-hover).
-    local function HighlightTabs()
-        for fam, btn in pairs(familyTabs) do
-            if fam == selectedFamily then
-                btn:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-                btn.label:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-                btn:SetScript("OnLeave", function(self)
-                    self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-                    self.label:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-                end)
-            else
-                btn:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
-                btn.label:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-                btn:SetScript("OnLeave", function(self)
-                    self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
-                    self.label:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-                end)
-            end
-        end
-    end
-
     -- Demon name status label below the tab row. Left x=10 aligns with the row NUMBER column (margin 8
     -- + the 2px number inset) so "Known as:"/"Name unknown" sit flush-left under the first demon tab.
     petNameLabel = summon:CreateFontString(nil, "OVERLAY")
@@ -1348,7 +1353,7 @@ do
     -- Page refresh = re-layout tabs + highlight active + redraw list + update the demon-name label.
     refreshSummon = function()
         LayoutTabs()
-        HighlightTabs()
+        HighlightTabRow(familyTabs, selectedFamily)
         refreshList()
         -- Pet names are per-character (on CharState, not the shared profile). Nil-guard as above.
         local char = WQ.CharState()
@@ -1473,7 +1478,95 @@ local function BuildAnnounceToggles(page, y, getParty, setParty, getRaid, setRai
     end
 end
 
--- ── Soulstone page (Party/Raid) ───────────────────────────────────────────────
+-- ── Announcements page (Party/Raid) ───────────────────────────────────────────
+-- Parent page over the three announcers (Soulstone, Banish, Loss of Control), one nav item instead of
+-- three. Same shape as Demon Summoning: a row of feature tabs across the top, the selected feature's body
+-- below. Each feature keeps its own body, flags and Enabled switch; only where it lives changed.
+--
+-- Each feature registers itself with AddAnnounceTab (from its own do block further down, in tab order)
+-- and builds into the frame it gets back exactly as it used to build into its own page. That frame sits
+-- under the tab strip, so a feature's offsets are relative to the strip, not the page divider.
+--
+-- The header "Enabled" box follows the SELECTED tab: the page's toggle spec is a proxy onto the active
+-- feature's own get/set, re-synced on every tab switch. The features have independent enable flags, so a
+-- single page-wide switch (as Demon Summoning has) would have nothing to map onto.
+local AddAnnounceTab
+do
+    local announceTabs = {}    -- key -> { frame, btn, toggle }, plus [i] -> key in tab order
+    local selectedTab          -- key of the shown feature; nil until the first tab registers
+    local toggleProxy = {
+        get = function() local t = announceTabs[selectedTab]; return t and t.toggle.get() end,
+        set = function(v) local t = announceTabs[selectedTab]; if t then t.toggle.set(v) end end,
+    }
+
+    local announce = NewPage("announce", "Announcements",
+        "Control when and where your character announces important actions, spells, or loss of control.",
+        toggleProxy)
+
+    local TAB_Y, TAB_H, TAB_W, TAB_GAP = -8, 22, 120, 4
+    local BODY_Y = TAB_Y - TAB_H - 4   -- feature bodies hang just under the tab strip
+
+    local btnByKey = {}   -- key -> tab button, the shape HighlightTabRow wants
+
+    -- Show the selected feature, hide the rest, and run its own OnPageShow (which is how each one
+    -- syncs its checkboxes and redraws its list, same as when it was a page of its own).
+    local function ShowSelected()
+        HighlightTabRow(btnByKey, selectedTab)
+        for _, key in ipairs(announceTabs) do
+            local t = announceTabs[key]
+            if key == selectedTab then t.frame:Show() else t.frame:Hide() end
+        end
+        local t = announceTabs[selectedTab]
+        if t and t.frame.OnPageShow then t.frame.OnPageShow() end
+    end
+
+    function AddAnnounceTab(key, label, toggle)
+        local frame = CreateFrame("Frame", nil, announce)
+        frame:SetPoint("TOPLEFT",     announce, "TOPLEFT",     0, BODY_Y)
+        frame:SetPoint("BOTTOMRIGHT", announce, "BOTTOMRIGHT", 0, 0)
+        frame:Hide()
+
+        local btn = MakeFlatButton(announce, label, TAB_W, TAB_H)
+        btn:SetScript("OnClick", function()
+            if key == selectedTab then return end
+            -- Abandon an in-progress line edit on the feature being left, as leaving a page would.
+            local leaving = announceTabs[selectedTab]
+            if leaving and leaving.frame.CancelEdit then leaving.frame.CancelEdit() end
+            selectedTab = key
+            SyncHeaderToggle()
+            ShowSelected()
+        end)
+
+        announceTabs[key] = { frame = frame, btn = btn, toggle = toggle }
+        announceTabs[#announceTabs + 1] = key
+        btnByKey[key] = btn
+        selectedTab = selectedTab or key   -- the first registered (Soulstone) is the default
+
+        -- Re-centre the whole strip each time one joins (fixed width fits even at min size).
+        local n, step = #announceTabs, TAB_W + TAB_GAP
+        for i, k in ipairs(announceTabs) do
+            btnByKey[k]:ClearAllPoints()
+            btnByKey[k]:SetPoint("TOP", announce, "TOP", (i - (n + 1) / 2) * step, TAB_Y)
+        end
+        return frame
+    end
+
+    -- ShowPage and the window's OnHide look for CancelEdit on the PAGE frame; forward it to every
+    -- feature that has a line list (only the shown one can be mid-edit, the rest are no-ops).
+    announce.CancelEdit = function()
+        for _, key in ipairs(announceTabs) do
+            local c = announceTabs[key].frame.CancelEdit
+            if c then c() end
+        end
+    end
+
+    announce.OnPageShow = ShowSelected   -- header toggle synced by ShowPage through the proxy
+end
+
+-- ── Soulstone tab (Announcements) ─────────────────────────────────────────────
+-- A tab of the Announcements page since it was folded in with Banish and Loss of Control; it was a
+-- page of its own until then. `soulstone` below is the tab body frame, not a page.
+--
 -- MERGED PAGE (v0.29): the cooldown tracker's own "Cooldowns" page folded in here, because both halves
 -- are about soulstones and TRACKED_ORDER is never going to hold a second warlock cooldown. Two features
 -- on one page, neither with a macro (both are combat-log driven, see core):
@@ -1487,17 +1580,17 @@ end
 --
 -- LAYOUT IS TIGHT AND THE ORDER MATTERS. BuildLineList reserves a fixed 98px at the page bottom for its
 -- help line, input row and quick-insert row, and takes whatever is left for the scrolling rows, so every
--- pixel spent above it comes straight out of the visible line count. The page body is 461px at MIN_H 572
--- (frame 572 - 8 pad - 30 titlebar - 8 pad = content top 46; content 518; subtitle -28, divider -48, page
--- top -57), and the list ends up ~-232 there, so it gets ~130px = 5 rows at minimum size, 6 at the 600
--- default, 13 at MAX_H 780. ANY new control added above the list costs rows: the first pass was down at
--- 2 rows carrying two extra headings and the Soulstone CD / Soulstone Active toggle pair, all since cut.
+-- pixel spent above it comes straight out of the visible line count. As its own page the body was 461px
+-- at MIN_H 572 and the list got ~130px = 5 rows at minimum size, 6 at the 600 default, 13 at MAX_H 780.
+-- Becoming a tab cost it the tab strip (~34px) plus the Announcements subtitle's second line wherever it
+-- wraps, so expect ~3 rows at minimum size and ~4 at the default. ANY new control added above the list
+-- costs more: the first pass was down at 2 rows carrying two extra headings and the Soulstone CD /
+-- Soulstone Active toggle pair, all since cut.
 --
 -- Offsets below the intro caption are relative to the `body` flow frame, NOT the page, so the whole
 -- stack rides up when that caption fits on one line. See the note at `body`.
 do
-    local soulstone = NewPage("soulstone", "Soulstone",
-        "Manage soulstone announcements and cooldown tracking.",
+    local soulstone = AddAnnounceTab("soulstone", "Soulstone",
         { get = WQ.IsSoulstoneFeatureEnabled, set = WQ.SetSoulstoneFeatureEnabled })
 
     local PAD_L, WRAP = 8, -16
@@ -1627,8 +1720,9 @@ do
         help1  = "|cff8788eeUse |r|cffaaaaaa{targetName}|r|cff8788ee as a placeholder for who got the soulstone|r",
     })
 
-    -- BuildLineList hangs CancelEdit on the frame it was given, but ShowPage and the window's OnHide look
-    -- for it on the PAGE frame. Forward it, or an in-progress line edit would survive leaving the page.
+    -- BuildLineList hangs CancelEdit on the frame it was given, but the Announcements page looks for it on
+    -- the TAB frame (on a tab switch, and when ShowPage/OnHide call its own CancelEdit). Forward it, or an
+    -- in-progress line edit would survive leaving the tab.
     soulstone.CancelEdit = body.CancelEdit
 
     -- Re-sync the checkboxes. Kept under the old name because the tracker HUD's X button calls it after
@@ -1644,13 +1738,14 @@ do
     end
 end
 
--- ── Banish Announcement page ──────────────────────────────────────────────────
+-- ── Banish tab (Announcements) ────────────────────────────────────────────────
+-- Was its own "Banish Announcement" page; its subtitle's "spell rank is added automatically" note moved
+-- into the line list's help line when it became a tab.
 -- Combat-log driven, no macro, but with TWO pools (landed vs. resisted) selected by a pair of
 -- accent sub-tabs; one shared line list edits whichever is active. Core filters own banishes and
 -- appends the rank, so the page just manages the text.
 do
-    local banish = NewPage("banish", "Banish Announcement",
-        "When you banish a target, a random line is announced to your party/raid. Spell rank is added automatically.",
+    local banish = AddAnnounceTab("banish", "Banish",
         { get = WQ.IsBanishEnabled, set = WQ.SetBanishEnabled })
 
     -- Party/raid/BG announce toggles at the top of the body (above the Banished/Resisted tabs).
@@ -1685,27 +1780,6 @@ do
         kindTabs[t.key]:SetPoint("TOP", banish, "TOP", (i - (n + 1) / 2) * step, TAB_Y)
     end
 
-    -- Accent-highlight the active tab; leave the other flat (mirrors the demon-tab style).
-    local function HighlightKindTabs()
-        for key, btn in pairs(kindTabs) do
-            if key == selectedKind then
-                btn:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-                btn.label:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-                btn:SetScript("OnLeave", function(self)
-                    self:SetBackdropBorderColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-                    self.label:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
-                end)
-            else
-                btn:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
-                btn.label:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-                btn:SetScript("OnLeave", function(self)
-                    self:SetBackdropBorderColor(THEME.border[1], THEME.border[2], THEME.border[3])
-                    self.label:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-                end)
-            end
-        end
-    end
-
     -- Resolve the DB list + the three helpers for the selected pool, so the one BuildLineList edits it.
     local function active()
         local prof = WQ.ActiveProfile()   -- nil pre-login; pools resolve to nil → empty list
@@ -1723,11 +1797,11 @@ do
         update = function(idx, text) local _, _, upd = active();         return upd(idx, text) end,
         delete = function(idx)       local _, _, _, del = active();      del(idx) end,
         placeholders = { "{targetName}" },
-        help1  = "|cff8788eeUse |r|cffaaaaaa{targetName}|r|cff8788ee as a placeholder for who you banished|r",
+        help1  = "|cff8788eeUse |r|cffaaaaaa{targetName}|r|cff8788ee for who you banished. Spell rank is added automatically.|r",
     })
 
     refreshBanish = function()
-        HighlightKindTabs()
+        HighlightTabRow(kindTabs, selectedKind)
         refreshList()
     end
 
@@ -2435,15 +2509,14 @@ do
     curse.OnPageShow = WQ.SyncCursesPage
 end
 
--- ── Loss of Control page ──────────────────────────────────────────────────────
+-- ── Loss of Control tab (Announcements) ───────────────────────────────────────
 -- Settings only, and the addon's first feature with no HUD and no editable lines: the messages are built
 -- in the core from the effect's own name and duration, so this page is nothing but toggles. Header toggle
 -- drives controlEnabled, ON by default since 0.31 took this out of beta. Body = party/raid announce
 -- toggles (which only bite out in the world: inside an instance the announce goes to /say), the
 -- per-category effect grid built from CONTROL_TYPE_ORDER, then the noise filters.
 do
-    local control = NewPage("control", "Loss of Control",
-        "Announces when you lose control or action of your character.",
+    local control = AddAnnounceTab("control", "Loss of Control",
         { get = WQ.IsControlEnabled, set = WQ.SetControlEnabled })
 
     local PAD_L, WRAP = 8, -16
@@ -2768,9 +2841,7 @@ do
         { label = "Ritual of Summoning",    page = "ritual"    },
         { label = "Ritual of Souls",        page = "souls"     },
         { header = "PARTY/RAID" },
-        { label = "Soulstone",              page = "soulstone"    },
-        { label = "Banish",                 page = "banish"       },
-        { label = "Loss of Control",        page = "control"      },
+        { label = "Announcements",          page = "announce"     },
         { label = "Consumables",            page = "consumables"  },
         { label = "Curses",                 page = "curses"       },
         { label = "Range Indicator",        page = "range"        },
