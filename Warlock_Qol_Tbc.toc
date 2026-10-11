@@ -1,8 +1,8 @@
 ## Interface: 20506
 ## Title: WarlockQol (TBC)
-## Notes: Quality of life tools for Warlocks (TBC 2.5.6): pet summon, rituals, soulstone & banish announcements, cooldown tracker, missing consumables, range indicator, curse tracker, loss of control
+## Notes: Quality of life tools for Warlocks (TBC 2.5.6): pet summon, rituals, soulstone, banish & loss of control announcements, cooldowns HUD, soulstone HUD, missing consumables, range indicator, curse tracker
 ## IconTexture: Interface\Icons\Spell_Shadow_EnslaveDemon
-## Version: 0.32
+## Version: 0.33
 ## SavedVariables: Warlock_Qol_Tbc_DB
 ## X-Curse-Project-ID: 1607660
 

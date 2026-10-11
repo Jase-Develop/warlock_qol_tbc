@@ -2,6 +2,49 @@
 
 All notable player-facing changes are listed here, newest first.
 
+### [0.33] - 2026-10-11
+
+Two HUDs instead of one, and a tidier menu. The Cooldowns HUD now follows every cooldown you have, and
+soulstones get a HUD of their own.
+
+#### Added
+- **A Cooldowns HUD that tracks everything you have on cooldown.** Your spells, the gear you are
+  wearing (trinkets and the like), and potions, healthstones and explosives from your bags. It finds
+  them by itself, so there is no list of spells to keep up to date, and a cooldown a talent shortens
+  shows its real length. Each row has a bar that drains as the cooldown runs, shading from dark red
+  through orange to green, and the longest wait sits at the top. Potions share one cooldown in TBC, so
+  they show as a single "Potion" row. Ctrl+click a row to announce it to your group, for example
+  `Rimm: Death Coil - 1:23 remaining`.
+- **Options for it on the new Cooldowns page:** hide anything by name (every rank at once), hide
+  cooldowns shorter than a number of seconds, **Exclude pet CDs** (on to start with, since most
+  warlocks sacrifice the pet), and **Transparent mode** (off to start with), which leaves only the
+  rows on a dark backing. Auto-show in raid and party, and opacity, work as before.
+- **A Soulstone HUD.** It shows each party/raid warlock's soulstone cooldown and who currently has a
+  soulstone, exactly as before, in a frame of its own. Set it up on the **Soulstone** tab: Show HUD,
+  Auto-show in raid (on), Auto-show in party (off) and its own opacity.
+
+#### Changed
+- **Soulstone, Banish and Loss of Control are now one menu item, Announcements,** with a tab for each
+  across the top, Soulstone first. The **Enabled** box at the top right applies to whichever tab is
+  selected.
+- **The Soulstone tab's Enabled box now covers the whole soulstone feature**: the announcement and the
+  Soulstone HUD. To keep the HUD but stop the announcement, untick its Party, Raid and BG/Arena boxes.
+- **Mounts and the Hearthstone never appear on the Cooldowns HUD.** Food, elixirs and flasks have no
+  cooldown, so they do not appear either.
+
+#### Fixed
+- **Switching profile now applies the Cooldowns HUD's settings straight away.** Before, a profile
+  with the HUD switched off (or on) did not take effect until you toggled it.
+
+#### Notes
+- **Your Cooldowns HUD stays where it was,** with its opacity and auto-show settings. The new
+  Soulstone HUD starts near the middle of the screen and stays hidden until you tick Show HUD or
+  enter a raid, so drag it where you want it the first time it appears.
+- **Healthstones and potions are read from your bags only when they change,** never on every cast,
+  so a full set of bags costs nothing noticeable.
+- For anyone using the debug commands: `DebugDumpCooldowns` is now `DebugDumpSoulstoneCooldowns`, and
+  `DebugDumpOwnCooldowns` shows what the Cooldowns HUD sees.
+
 ### [0.32] - 2026-08-28
 
 Housekeeping. The addon has a proper icon in the game's AddOn list, and the install instructions no
