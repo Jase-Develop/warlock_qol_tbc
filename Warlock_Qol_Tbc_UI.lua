@@ -3401,7 +3401,7 @@ do
         -- Each row's bar starts full and drains LEFT in step with the timer: its width is the fraction
         -- of the cooldown remaining, so a 100s cooldown loses 1% a second. The colour blends through
         -- three stops: a slightly dark red when full (user call; it started as a light red), orange at
-        -- 50%, green from 20% down. Half see-through so the
+        -- 50%, green from 10% down (lowered from 20%, user call). Half see-through so the
         -- icon and text stay readable on top. Repainted EVERY FRAME (only a width and a colour per row,
         -- cheap), separate from the 0.2s text tick, so a short cooldown still drains smoothly.
         local BAR_ALPHA = 0.45
@@ -3411,7 +3411,7 @@ do
         end
         local function BarColour(frac)
             if frac >= 0.5 then return Blend(BAR_ORANGE, BAR_RED, (frac - 0.5) / 0.5) end
-            if frac >= 0.2 then return Blend(BAR_GREEN, BAR_ORANGE, (frac - 0.2) / 0.3) end
+            if frac >= 0.1 then return Blend(BAR_GREEN, BAR_ORANGE, (frac - 0.1) / 0.4) end
             return BAR_GREEN[1], BAR_GREEN[2], BAR_GREEN[3]
         end
         local function UpdateBars()

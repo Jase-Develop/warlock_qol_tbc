@@ -12,8 +12,9 @@ soulstones get a HUD of their own.
   wearing (trinkets and the like), and potions, healthstones and explosives from your bags. It finds
   them by itself, so there is no list of spells to keep up to date, and a cooldown a talent shortens
   shows its real length. Each row has a bar that drains as the cooldown runs, shading from dark red
-  through orange to green, and the longest wait sits at the top. Potions share one cooldown in TBC, so
-  they show as a single "Potion" row, and healthstones of different ranks as one "Healthstone" row. Ctrl+click a row to announce it to your group, for example
+  through orange to green, and the longest wait sits at the top. A potion, healthstone, rune or
+  explosive shows under the name of the one you used, such as "Destruction Potion" or "Dark Rune".
+  Potions share one cooldown in TBC, so that is always a single row. Ctrl+click a row to announce it to your group, for example
   `Rimm: Death Coil - 1:23 remaining`.
 - **Options for it on the new Cooldowns page:** hide anything by name (every rank at once), hide
   cooldowns shorter than a number of seconds, **Exclude pet CDs** (on to start with, since most

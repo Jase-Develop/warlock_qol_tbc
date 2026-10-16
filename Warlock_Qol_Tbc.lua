@@ -168,7 +168,8 @@ WQ.PET_FAMILIES = { "Imp", "Voidwalker", "Succubus", "Incubus", "Felhunter", "Fe
 -- Account-wide SavedVariable (declared in the .toc). Layout:
 --   profiles[<name>] = shareable config (line pools, *Enabled/*Seeded flags, HUD settings)
 --                      -- account-wide so config can be copied between chars
---   chars[<Name-Realm>] = { profile, masterEnabled, setupComplete, classDefaultApplied, petNames, ownCds }  -- per-char
+--   chars[<Name-Realm>] = { profile, masterEnabled, setupComplete, classDefaultApplied, petNames, ownCds,
+--                           usedItems }  -- per-char; usedItems = the Cooldowns HUD's last-used consumables
 --
 -- SAVED NAMES THAT PREDATE THEIR FEATURE'S CURRENT NAME. Kept as-is on purpose (user call, 2026-10-11):
 -- renaming a saved key would reset that setting for every existing user and break older share strings.
@@ -1624,6 +1625,7 @@ local OwnCd = {
     cds     = {},      -- runtime store (NOT saved): name -> { expires (GetTime domain), duration, icon, kind }
     book    = {},      -- { slot, pet, name, icon } per castable spellbook slot
     items   = {},      -- itemID -> { name, icon, subType } per bag CONSUMABLE seen this session; false = not one
+    useSpell = {},     -- use-effect spellID -> itemID, so a cast says which consumable was used
     bookApi = "none",  -- which spellbook accessor resolved (DebugDumpOwnCooldowns prints it)
     cdApi   = "none",  -- which spell-cooldown accessor resolved (likewise)
 }
@@ -1787,9 +1789,11 @@ do
         local s, d, e = fn(itemID)
         return s, d, (e == true or e == 1)
     end
+    -- name, spellID of an item's use effect (nil while the item is uncached).
     local function ItemUseSpell(itemID)
         local fn = (C_Item and C_Item.GetItemSpell) or GetItemSpell
-        return fn and (fn(itemID))
+        if not fn then return nil end
+        return fn(itemID)
     end
 
     -- Classify a bag item once per session. GetItemInfoInstant needs no item cache, so the class check
@@ -1804,14 +1808,18 @@ do
         if not getInfo then return end
         local _, _, subType, _, icon, classID, subClassID = getInfo(id)
         if classID ~= CONSUMABLE_CLASS then OwnCd.items[id] = false; return end
-        local use = ItemUseSpell(id)
+        local use, useID = ItemUseSpell(id)
         if not use then return end                          -- not cached yet: retry next bag pass
         if use == SOULSTONE_SPELL_NAME then OwnCd.items[id] = false; return end
         local name = link:match("%[(.-)%]")
         if subClassID == CONSUMABLE_OTHER then subType = nil end
-        if name then OwnCd.items[id] = { name = name, icon = icon, subType = subType } end
+        if name then
+            OwnCd.items[id] = { name = name, icon = icon, subType = subType }
+            if useID then OwnCd.useSpell[useID] = id end    -- so a cast of it tells us this item was used
+        end
     end
 
+    -- FALLBACK LABEL ONLY, for a shared cooldown whose use we never saw (see the bag section of Scan).
     -- The words every name in the list ends with: "Master Healthstone" + "Major Healthstone" gives
     -- "Healthstone", "Super Healing Potion" + "Super Mana Potion" gives "Potion". nil when they share none.
     local function SharedEnding(names)
@@ -1833,10 +1841,16 @@ do
         return common and table.concat(common, " ")
     end
 
-    -- One pass over the backpack + four bags (equipped gear is read directly by slot instead).
+    -- One pass over the backpack + four bags (equipped gear is read directly by slot instead). Then the
+    -- items this character USED recently are added back from the saved record, so after a /reload the
+    -- last healthstone you ate is still known by name even though it has left your bags.
     local function DiscoverBagItems()
         for bag = 0, (NUM_BAG_SLOTS or 4) do
             for slot = 1, BagSlotCount(bag) do NoteBagItem(BagItemLink(bag, slot)) end
+        end
+        local cs = CharState()
+        for id, u in pairs(cs and cs.usedItems or {}) do
+            if OwnCd.items[id] == nil then OwnCd.items[id] = { name = u.name, icon = u.icon, subType = u.subType } end
         end
     end
 
@@ -1872,6 +1886,24 @@ do
     function OwnCd.MarkDirty()     ownDirty = true end
     function OwnCd.MarkSpellbook() ownDirty = true; bookDirty = true end
     function OwnCd.MarkBags()      ownDirty = true; bagsDirty = true end
+
+    -- The player finished a cast (UNIT_SPELLCAST_SUCCEEDED). When it is a bag consumable's use effect,
+    -- record WHICH item was used, so its shared-cooldown row is named after it. Saved per character in
+    -- wall-clock time (time(), not GetTime(), which restarts with the client) so a /reload keeps it.
+    -- Entries older than a day are dropped; the record holds one entry per distinct item, so it stays tiny.
+    function OwnCd.NoteCast(spellID)
+        local id = spellID and OwnCd.useSpell[spellID]
+        local info = id and OwnCd.items[id]
+        local cs = CharState()
+        if not (info and cs) then return end
+        cs.usedItems = cs.usedItems or {}
+        local now = time()
+        for k, u in pairs(cs.usedItems) do
+            if now - (u.at or 0) > 86400 then cs.usedItems[k] = nil end
+        end
+        cs.usedItems[id] = { at = now, name = info.name, icon = info.icon, subType = info.subType }
+        ownDirty = true
+    end
 
     -- Read every candidate cooldown into OwnCd.cds. Returns true when the SET of names changed (the HUD
     -- then rebuilds rows; otherwise its tick just re-reads the expiries). `trace`, when given, is filled
@@ -1932,13 +1964,22 @@ do
             end
         end
 
-        -- Bag consumables, COLLAPSED by shared cooldown: in TBC every potion shares one cooldown, so a
-        -- healing and a mana potion would otherwise be two rows with identical timers. Items whose
-        -- cooldowns start and end at exactly the same moment become ONE row. One item is named as
-        -- itself ("Master Healthstone"); several take the words their names end with ("Healthstone",
-        -- "Potion"), then their item type, then the first item's name. The type is skipped when it is
-        -- "Other" (healthstones), which says nothing. An item excluded by name or by type ("Potion")
-        -- drops out before grouping. Sorted by ID so the row keeps the same icon from scan to scan.
+        -- Bag consumables: ONE ROW PER SHARED COOLDOWN, NAMED AFTER WHAT YOU USED (user call,
+        -- 2026-10-16). Items that share a cooldown (every TBC potion shares one; Dark and Demonic Runes
+        -- share another) all report the same timer, so they are grouped by exact start+duration and the
+        -- row takes the name and icon of the item whose use OwnCd.NoteCast recorded: drink a Destruction
+        -- Potion and the row reads "Destruction Potion". There is never a second row to worry about,
+        -- since nothing else on that cooldown can be used until it ends.
+        -- A recorded use only counts if it happened as this cooldown STARTED; an older one belongs to an
+        -- earlier cooldown. time() is whole seconds, hence the 2s of slack. If no use was seen (the
+        -- feature was off at the time, or the client gave no spell ID), the row falls back to the
+        -- words the group's names share ("Potion"), then their item type, then the first name, which
+        -- is vague but never names the wrong item. The type is skipped when it is "Other"
+        -- (healthstones), which says nothing. Exclusions apply to the row's final name, and to its type
+        -- ("Potion"). Sorted by ID so a fallback row keeps the same icon from scan to scan.
+        local cs = CharState()
+        local used = cs and cs.usedItems or {}
+        local wallOffset = time() - GetTime()   -- add to a GetTime() value to get wall-clock time
         local groups, order = {}, {}
         local ids = {}
         for id, info in pairs(OwnCd.items) do if info then ids[#ids + 1] = id end end
@@ -1946,8 +1987,7 @@ do
         for _, id in ipairs(ids) do
             local info = OwnCd.items[id]
             local st, du, en = ItemCooldown(id)
-            if st and du and st > 0 and du > GCD_MAX and not excluded[info.name:lower()]
-                    and not (info.subType and excluded[info.subType:lower()]) then
+            if st and du and st > 0 and du > GCD_MAX then
                 local k = ("%.3f:%.3f"):format(st, du)
                 local g = groups[k]
                 if not g then
@@ -1955,16 +1995,25 @@ do
                     groups[k] = g; order[#order + 1] = k
                 end
                 g.names[#g.names + 1] = info.name
+                local u = used[id]
+                if u and u.at and u.at >= st + wallOffset - 2 and (not g.usedAt or u.at > g.usedAt) then
+                    g.used, g.usedAt = info, u.at
+                end
             end
         end
         for _, k in ipairs(order) do
             local g = groups[k]
-            local label = g.first.name
-            if #g.names > 1 then
-                local subType = g.first.subType ~= "" and g.first.subType or nil
+            local info = g.used or g.first
+            local label = info.name
+            if not g.used and #g.names > 1 then
+                local subType = info.subType ~= "" and info.subType or nil
                 label = SharedEnding(g.names) or subType or label
             end
-            consider(label, g.first.icon, "item", g.s, g.d, g.enabled)
+            if info.subType and info.subType ~= "" and excluded[info.subType:lower()] then
+                if trace then trace[#trace + 1] = { name = label, kind = "item", rem = g.s + g.d - now, dur = g.d, why = "excluded (by type)" } end
+            else
+                consider(label, info.icon, "item", g.s, g.d, g.enabled)
+            end
         end
 
         local cds, changed = OwnCd.cds, false
@@ -2482,6 +2531,10 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "BAG_UPDATE_DELAYED" then
         OwnCd.MarkBags()        -- bags settled: look for new consumables before one gets used up
 
+    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        local unit, _, spellID = ...
+        if unit == "player" then OwnCd.NoteCast(spellID) end   -- which potion/healthstone/rune was used
+
     elseif event == "GROUP_ROSTER_UPDATE" then
         -- Roster changed: request a soulstone sync, re-evaluate both HUDs, refresh the soulstone rows.
         RequestGroupCdSync()
@@ -2577,6 +2630,15 @@ UpdateCooldownsRegistration = function()
     local on = CooldownsActive()
     for _, ev in ipairs(OWN_CD_EVENTS) do
         pcall(on and eventFrame.RegisterEvent or eventFrame.UnregisterEvent, eventFrame, ev)
+    end
+    -- Which bag consumable was used. A unit event, so it is narrowed to the player where the client
+    -- allows it; the handler checks the unit anyway for a client that only has RegisterEvent.
+    if not on then
+        pcall(eventFrame.UnregisterEvent, eventFrame, "UNIT_SPELLCAST_SUCCEEDED")
+    elseif eventFrame.RegisterUnitEvent then
+        pcall(eventFrame.RegisterUnitEvent, eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player")
+    else
+        pcall(eventFrame.RegisterEvent, eventFrame, "UNIT_SPELLCAST_SUCCEEDED")
     end
     if on then OwnCd.MarkSpellbook(); OwnCd.MarkBags() end   -- events were off: assume anything changed
     UpdateRosterRegistration()
@@ -2949,6 +3011,14 @@ function WQ.DebugDumpOwnCooldowns()
     end
     if gcd > 0 then print(("  (%d spells on the global cooldown, hidden)"):format(gcd)) end
     if #trace == 0 then print("  (the client reports no cooldowns running)") end
+    -- Which consumables a cast can be traced back to, and the uses recorded so far (they name the rows).
+    local spells = 0
+    for _ in pairs(OwnCd.useSpell) do spells = spells + 1 end
+    print(("  %d bag consumables have a use spell ID (a use can only be recognised for these)"):format(spells))
+    local cs = CharState()
+    for _, u in pairs(cs and cs.usedItems or {}) do
+        print(("  last used: %s, %ds ago"):format(u.name or "?", time() - (u.at or 0)))
+    end
 end
 
 -- Debug dump (/run Warlock_Qol_Tbc.DebugDumpSoulstoneCooldowns()): sync state + each warlock's soulstone CD.
