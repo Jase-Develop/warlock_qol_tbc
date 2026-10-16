@@ -16,8 +16,10 @@ soulstones get a HUD of their own.
   explosive shows under the name of the one you used, such as "Destruction Potion" or "Dark Rune".
   Potions share one cooldown in TBC, so that is always a single row. Ctrl+click a row to announce it to your group, for example
   `Rimm: Death Coil - 1:23 remaining`.
-- **Options for it on the new Cooldowns page:** hide anything by name (every rank at once), hide
-  cooldowns shorter than a number of seconds, **Exclude pet CDs** (on to start with, since most
+- **Options for it on the new Cooldowns page:** hide anything by name (every rank at once). Start
+  typing and it lists the matching spells, gear and consumables you have, with their icons, so you
+  pick the exact name instead of spelling it out; or Ctrl+right-click a row on the HUD to hide it (a
+  chat message confirms it). Also **Exclude pet CDs** (on to start with, since most
   warlocks sacrifice the pet), and **Transparent mode** (off to start with), which leaves only the
   rows on a dark backing. Auto-show in raid and party, and opacity, work as before.
 - **A Soulstone HUD.** It shows each party/raid warlock's soulstone cooldown and who currently has a

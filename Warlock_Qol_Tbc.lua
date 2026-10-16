@@ -253,10 +253,11 @@ local function InitProfile(p)
     -- Its Show HUD flag is top-level (soulstoneHUD.open), like every other HUD's.
     if p.soulstoneShowRaid  == nil then p.soulstoneShowRaid  = true  end
     if p.soulstoneShowParty == nil then p.soulstoneShowParty = false end
-    -- The Cooldowns HUD's own-cooldown exclude list (spell/item names, any rank), and the minimum
-    -- cooldown length to show (seconds, 0 = everything above the global cooldown).
-    if not p.cooldownExcludes       then p.cooldownExcludes    = {}   end
-    if p.cooldownMinDuration == nil then p.cooldownMinDuration = 0    end
+    -- The Cooldowns HUD's own-cooldown exclude list (spell/item names, any rank).
+    if not p.cooldownExcludes then p.cooldownExcludes = {} end
+    -- A "hide cooldowns shorter than N seconds" filter lived here briefly and was removed (user call,
+    -- 2026-10-16); drop its saved value so it does not linger in SavedVariables.
+    p.cooldownMinDuration = nil
     -- Cooldowns HUD transparent mode (no backdrop, header or empty-state text). Defaults OFF, unlike the
     -- Consumables/Range equivalents, so an update never changes the look of a HUD someone already uses.
     if p.cooldownsTransparent == nil then p.cooldownsTransparent = false end
@@ -1595,8 +1596,8 @@ end
 -- lists: the Hearthstone and mount items are class Miscellaneous. The first version scanned every bag
 -- item and then had to block noise one item at a time (a seeded Hearthstone exclusion, a mount-item
 -- check); a class allow-list replaced all of that.
--- The user narrows it with an EXCLUDE list (by name, so every rank goes at once) and an optional
--- minimum duration. Because the numbers come from the client they are exact, already include any
+-- The user narrows it with an EXCLUDE list (by name, so every rank goes at once). Because the
+-- numbers come from the client they are exact, already include any
 -- talent that shortens a cooldown, and survive /reload with no persistence of our own.
 --
 -- OWN COOLDOWNS ONLY, deliberately (user call): the client exposes no one else's. The soulstone group
@@ -1877,11 +1878,6 @@ do
         return set
     end
 
-    function OwnCd.MinDuration()
-        local p = ActiveProfile()
-        return (p and tonumber(p.cooldownMinDuration)) or 0
-    end
-
     -- Event hooks (the event frame calls these). Cheap: they only flag work for the next scan.
     function OwnCd.MarkDirty()     ownDirty = true end
     function OwnCd.MarkSpellbook() ownDirty = true; bookDirty = true end
@@ -1905,6 +1901,39 @@ do
         ownDirty = true
     end
 
+    -- Everything that could appear on the HUD, for the Cooldowns page's exclude picker (user call,
+    -- 2026-10-16: pick the exact name instead of typing it). Every castable spell (player, then pet),
+    -- every equipped item with a use effect, every bag consumable seen this session, and those
+    -- consumables' item types ("Potion"), since excluding a type hides all of it. Only what this
+    -- character has RIGHT NOW: pet spells while that demon is out, items once seen in the bags.
+    -- Spells with no cooldown are offered too; the 2.5.6 client has no reliable way to tell them apart.
+    -- One entry per name (ranks fold together, as the exclusions match by name), sorted by name.
+    -- Rebuilt fresh on each call, so the page asks only on page show and when the box gains focus.
+    function OwnCd.Candidates()
+        RebuildBook();      bookDirty = false
+        DiscoverBagItems(); bagsDirty = false
+        local list, seen = {}, {}
+        local function add(name, icon, source)
+            if not name or name == "" or seen[name:lower()] then return end
+            seen[name:lower()] = true
+            list[#list + 1] = { name = name, icon = icon, source = source }
+        end
+        for _, e in ipairs(OwnCd.book) do add(e.name, e.icon, e.pet and "Pet" or "Spell") end
+        for slot = 1, EQUIP_SLOTS do
+            local id = GetInventoryItemID("player", slot)
+            if id and ItemUseSpell(id) then
+                local link = GetInventoryItemLink("player", slot)
+                add(link and link:match("%[(.-)%]"), GetInventoryItemTexture("player", slot), "Gear")
+            end
+        end
+        for _, info in pairs(OwnCd.items) do if info then add(info.name, info.icon, "Bag") end end
+        for _, info in pairs(OwnCd.items) do
+            if info and info.subType and info.subType ~= "" then add(info.subType, info.icon, "Type") end
+        end
+        table.sort(list, function(a, b) return a.name:lower() < b.name:lower() end)
+        return list
+    end
+
     -- Read every candidate cooldown into OwnCd.cds. Returns true when the SET of names changed (the HUD
     -- then rebuilds rows; otherwise its tick just re-reads the expiries). `trace`, when given, is filled
     -- with a line per candidate saying what happened to it (used by DebugDumpOwnCooldowns).
@@ -1914,7 +1943,7 @@ do
         if bookDirty then RebuildBook();      bookDirty = false end
         if bagsDirty then DiscoverBagItems(); bagsDirty = false end
 
-        local now, excluded, minDur = GetTime(), ExcludeSet(), OwnCd.MinDuration()
+        local now, excluded = GetTime(), ExcludeSet()
         local found = {}   -- name -> { expires, icon, kind, start, duration }
         local function consider(name, icon, kind, s, d, enabled)
             if not (name and s and d) or s <= 0 or d <= 0 then return end
@@ -1923,7 +1952,6 @@ do
             elseif d <= GCD_MAX then           why = "global cooldown"
             elseif s + d <= now then           why = "finished"
             elseif excluded[name:lower()] then why = "excluded"
-            elseif d < minDur then             why = ("shorter than the %ds minimum"):format(minDur)
             end
             if trace then trace[#trace + 1] = { name = name, kind = kind, rem = s + d - now, dur = d, why = why } end
             if why then return end
@@ -2913,6 +2941,10 @@ function WQ.GetOwnCooldowns()
     return list
 end
 
+-- The exclude picker's candidates: a list of { name, icon, source } where source is "Spell", "Pet",
+-- "Gear", "Bag" or "Type". See OwnCd.Candidates.
+function WQ.GetCooldownCandidates() return OwnCd.Candidates() end
+
 -- Cheap store-only getter for the HUD's tick: remaining seconds (0 = done / not on cooldown), plus the
 -- cooldown's full duration as a second value, which the HUD's progress bars divide by.
 function WQ.GetOwnCooldownRemaining(name)
@@ -2922,24 +2954,24 @@ function WQ.GetOwnCooldownRemaining(name)
     return rem > 0 and rem or 0, c.duration
 end
 
--- Own-cooldown FILTER settings: the exclude list, "Exclude pet CDs" and the minimum length. All
--- per-profile, and every setter re-flags the scan and refreshes the HUD through ExcludesChanged.
+-- Own-cooldown FILTER settings: the exclude list and "Exclude pet CDs". Both per-profile, and every
+-- setter re-flags the scan and refreshes the HUD through ExcludesChanged.
 -- Scoped in a do block (main-chunk local limit, see OwnCd): EVERY setter that calls ExcludesChanged
 -- must live inside it, or it calls an undefined global at runtime. That is exactly the bug the first
--- pass shipped with, SetCooldownsMinDuration sitting just past the block's end.
+-- pass shipped with (a since-removed minimum-length setter sitting just past the block's end).
 do
     local function ExcludesChanged()
         OwnCd.MarkDirty()
         if WQ.RefreshCooldownsHUD then WQ.RefreshCooldownsHUD() end
     end
 
-    -- Exclude list (names, matched case-insensitively against every rank). Same add / update / delete
-    -- shape as the line pools, so the page can drive it with the shared line-list widget. Rejects a
-    -- blank name or one already on the list.
-    local function ExcludeIndex(list, name, skip)
+    -- Exclude list (names, matched case-insensitively against every rank). Add and delete only, the
+    -- same shape as the line pools minus edit (user call, 2026-10-16), so the page can drive it with the
+    -- shared line-list widget. Rejects a blank name or one already on the list.
+    local function ExcludeIndex(list, name)
         local key = name:lower()
         for i, n in ipairs(list) do
-            if i ~= skip and n:lower() == key then return i end
+            if n:lower() == key then return i end
         end
     end
     function WQ.AddCooldownExclude(text)
@@ -2947,15 +2979,6 @@ do
         local name = text and text:match("^%s*(.-)%s*$") or ""
         if not p or name == "" or ExcludeIndex(p.cooldownExcludes, name) then return false end
         table.insert(p.cooldownExcludes, name)
-        ExcludesChanged()
-        return true
-    end
-    function WQ.UpdateCooldownExclude(index, text)
-        local p = ActiveProfile()
-        local name = text and text:match("^%s*(.-)%s*$") or ""
-        if not p or name == "" or not p.cooldownExcludes[index] then return false end
-        if ExcludeIndex(p.cooldownExcludes, name, index) then return false end
-        p.cooldownExcludes[index] = name
         ExcludesChanged()
         return true
     end
@@ -2971,16 +2994,6 @@ do
     function WQ.IsCooldownsHidePet() local p = ActiveProfile(); return p and p.cooldownHidePet ~= false or false end
     function WQ.SetCooldownsHidePet(on)
         local p = ActiveProfile(); if p then p.cooldownHidePet = on and true or false end
-        ExcludesChanged()
-    end
-
-    -- Minimum cooldown length to show, in seconds (0 = everything above the global cooldown). Clamped.
-    function WQ.GetCooldownsMinDuration() return OwnCd.MinDuration() end
-    function WQ.SetCooldownsMinDuration(secs)
-        local p = ActiveProfile()
-        secs = tonumber(secs)
-        if not p or not secs then return end
-        p.cooldownMinDuration = math.max(0, math.min(3600, math.floor(secs)))
         ExcludesChanged()
     end
 end
@@ -4115,10 +4128,6 @@ local function SanitizeProfile(raw)
     -- consumable expiry threshold (seconds) — only a sane number travels; InitProfile defaults it.
     if type(raw.consumeThreshold) == "number" and raw.consumeThreshold >= 5 and raw.consumeThreshold <= 3600 then
         p.consumeThreshold = math.floor(raw.consumeThreshold)
-    end
-    -- own-cooldown minimum length (seconds): only a sane number travels; InitProfile defaults it.
-    if type(raw.cooldownMinDuration) == "number" and raw.cooldownMinDuration >= 0 and raw.cooldownMinDuration <= 3600 then
-        p.cooldownMinDuration = math.floor(raw.cooldownMinDuration)
     end
     -- range HUD text size (points) — only a sane number travels; InitProfile defaults it.
     if type(raw.rangeFontSize) == "number" and raw.rangeFontSize >= 8 and raw.rangeFontSize <= 40 then

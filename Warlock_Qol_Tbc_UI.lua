@@ -942,12 +942,19 @@ end)
 -- pages. `accessors` supplies the data:
 --   get()             -> the table of lines to display
 --   add(text)         -> truthy if the line was added (clears the input)
---   update(idx, text) -> truthy if the line at idx was updated (edit-in-place)
+--   update(idx, text) -> truthy if the line at idx was updated (edit-in-place). Optional: leave it
+--                        out for a list with no Edit button (the Cooldowns exclude list)
 --   delete(idx)       -> remove the line at idx
---   help1             -> a single grey help string at the bottom
+--   help1             -> a single grey help string at the bottom. Optional: without it the input row
+--                        drops into that space and the list grows by the same amount
 -- Optional, for a list that is not chat lines (the Cooldowns page's exclude list):
 --   quickInsert = false -> no raid-marker / placeholder row; the list takes back its 32px
 --   addLabel, updateLabel, emptyText -> replace "Add Line" / "Update Line" / "No lines added yet..."
+--   rowInfo(text)  -> icon, known: each row gets an icon, and a dim "(not found)" when known is false
+--   suggest(text)  -> { {name, icon, source}, ... }: a list of matches pops up above the box while
+--                     typing; clicking one adds (or, mid-edit, updates) it. Typed text still submits.
+--   onFocus()      -> called when the box gains focus (e.g. to rebuild what suggest searches)
+--   placeholder    -> dim hint text shown in the empty input box ("Type here...")
 -- Each row has an edit + an X button; edit loads the line into the box and flips Add → "Update Line".
 -- Returns a Refresh() the caller wires to page-show / external events.
 local function BuildLineList(parent, yTop, accessors)
@@ -956,6 +963,7 @@ local function BuildLineList(parent, yTop, accessors)
     -- Forward-declared: the row buttons are created before the input box but their handlers capture
     -- it, and Lua only captures locals that already exist, so declare here / assign below.
     local inputBox, addBtn, cancelBtn
+    local suggestPanel   -- the type-ahead list, only for a list that passes accessors.suggest
     local editingIndex   -- nil = adding a new line; otherwise the index being edited
     local editingList    -- the lines table the edit began in (to detect a tab switch)
     local CancelEdit     -- resets back to "add" mode (defined once inputBox/addBtn exist)
@@ -968,10 +976,13 @@ local function BuildLineList(parent, yTop, accessors)
     local quickInsert = accessors.quickInsert ~= false
     local addLabel    = accessors.addLabel    or "Add Line"
     local updateLabel = accessors.updateLabel or "Update Line"
+    -- Everything below the list stacks up from this baseline: 24px higher when there is a help line
+    -- under the input row, flush at the bottom margin when there is not.
+    local BASE = accessors.help1 and 24 or 0
     local scrollFrame = CreateFrame("ScrollFrame", nil, parent, "FauxScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT",     parent, "TOPLEFT",     CONTENT_L, yTop)
     -- Bottom leaves room for the control stack (help line, input row, quick-insert row); list fills the rest.
-    scrollFrame:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", CONTENT_R, quickInsert and 98 or 70)
+    scrollFrame:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", CONTENT_R, BASE + (quickInsert and 74 or 46))
 
     -- Empty-state message (italic, dim) shown where the rows would be when the list is empty. Distinct
     -- from the per-row "(empty line…)" marker for a blank entry within a non-empty list.
@@ -1014,6 +1025,13 @@ local function BuildLineList(parent, yTop, accessors)
                 local val = lines[idx]
                 if val == nil or (type(val) == "string" and val:match("^%s*$")) then
                     row.text:SetText("|cff666666(empty line — click X to remove)|r")
+                    if row.icon then row.icon:SetTexture(nil) end
+                elseif row.icon then
+                    -- A list of names (the exclude list): the matching icon, or a question mark and a
+                    -- dim note when nothing this character has right now goes by that name.
+                    local icon, known = accessors.rowInfo(val)
+                    row.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+                    row.text:SetText(known and val or (val .. "  |cff666666(not found)|r"))
                 else
                     row.text:SetText(RenderIconTokens(val))
                 end
@@ -1023,9 +1041,11 @@ local function BuildLineList(parent, yTop, accessors)
                     accessors.delete(capturedIdx)
                     Refresh()
                 end)
-                row.editBtn:SetScript("OnClick", function()
-                    EnterEditMode(capturedIdx, lines)
-                end)
+                if row.editBtn then
+                    row.editBtn:SetScript("OnClick", function()
+                        EnterEditMode(capturedIdx, lines)
+                    end)
+                end
                 row:Show()
             else
                 row:Hide()
@@ -1071,12 +1091,23 @@ local function BuildLineList(parent, yTop, accessors)
         num:SetJustifyH("LEFT")
         row.num = num
 
-        -- The line text, between the number column and the Edit/X buttons.
+        -- Optional icon column (lists that pass rowInfo), between the number and the text.
+        local textLeft = num
+        if accessors.rowInfo then
+            local icon = row:CreateTexture(nil, "ARTWORK")
+            icon:SetSize(ROW_H - 8, ROW_H - 8)
+            icon:SetPoint("LEFT", num, "RIGHT", 4, 0)
+            icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)   -- trim the default icon border
+            row.icon = icon
+            textLeft = icon
+        end
+
+        -- The line text, between the number (or icon) column and the Edit/X buttons.
         local text = row:CreateFontString(nil, "OVERLAY")
         ApplyFont(text, "body")
         text:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-        text:SetPoint("LEFT",  num, "RIGHT", 6,   0)
-        text:SetPoint("RIGHT", row, "RIGHT", -74, 0)
+        text:SetPoint("LEFT",  textLeft, "RIGHT", 6, 0)
+        text:SetPoint("RIGHT", row, "RIGHT", accessors.update and -74 or -32, 0)
         text:SetJustifyH("LEFT")
         text:SetWordWrap(false)  -- keep each line on one row; long lines truncate
         row.text = text
@@ -1087,9 +1118,12 @@ local function BuildLineList(parent, yTop, accessors)
         row.delBtn = delBtn
 
         -- Edit button left of the X — loads the line into the box for in-place editing (OnClick in Refresh).
-        local editBtn = MakeFlatButton(row, "Edit", 40, 20)
-        editBtn:SetPoint("RIGHT", delBtn, "LEFT", -2, 0)
-        row.editBtn = editBtn
+        -- Only for a list that passes `update`; without it there is no edit mode at all.
+        if accessors.update then
+            local editBtn = MakeFlatButton(row, "Edit", 40, 20)
+            editBtn:SetPoint("RIGHT", delBtn, "LEFT", -2, 0)
+            row.editBtn = editBtn
+        end
 
         row:Hide()  -- hidden until Refresh populates it
         rows[i] = row
@@ -1100,9 +1134,21 @@ local function BuildLineList(parent, yTop, accessors)
     -- buttons could capture them.)
     inputBox = MakeFlatEditBox(parent)
     inputBox:SetHeight(24)
-    inputBox:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", CONTENT_L, 38)
+    inputBox:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", CONTENT_L, BASE + 14)
     inputBox:SetMaxLetters(255)
     -- (right edge anchored to the Add button below, so it stretches with the frame)
+
+    -- Optional placeholder: dim hint text inside the box, shown only while it is empty. Lined up with
+    -- the typed text (the box's 6px left inset). OnTextChanged fires for our own SetText calls too, so
+    -- clearing the box after an add brings the hint back.
+    if accessors.placeholder then
+        local hint = inputBox:CreateFontString(nil, "OVERLAY")
+        ApplyFontItalic(hint, "body")
+        hint:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+        hint:SetPoint("LEFT", inputBox, "LEFT", 6, 0)
+        hint:SetText(accessors.placeholder)
+        inputBox:HookScript("OnTextChanged", function(self) hint:SetShown(self:GetText() == "") end)
+    end
 
     -- Enter edit mode for line `idx` of `list`: load it into the box, focus, flip the Add
     -- button to "Update Line", reveal the Cancel button, and re-anchor the box's right edge
@@ -1125,6 +1171,7 @@ local function BuildLineList(parent, yTop, accessors)
         addBtn:SetText(addLabel)
         cancelBtn:Hide()
         inputBox:SetPoint("RIGHT", addBtn, "LEFT", -10, 0)
+        if suggestPanel then suggestPanel:Hide() end
     end
 
     -- Expose CancelEdit on the page frame so ShowPage + the window's OnHide can abandon an in-progress
@@ -1133,6 +1180,7 @@ local function BuildLineList(parent, yTop, accessors)
 
     -- Submit the input box: update the line being edited, or add a new one.
     local function Submit()
+        if suggestPanel then suggestPanel:Hide() end
         if editingIndex then
             if accessors.update(editingIndex, inputBox:GetText()) then
                 CancelEdit()
@@ -1152,7 +1200,7 @@ local function BuildLineList(parent, yTop, accessors)
     end)
 
     addBtn = MakeFlatButton(parent, addLabel, 90, 24)
-    addBtn:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", CONTENT_R, 38)  -- same right edge as the rows
+    addBtn:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", CONTENT_R, BASE + 14)  -- same right edge as the rows
     addBtn:SetScript("OnClick", Submit)  -- ...and so does the button
 
     -- Cancel button: shown only while editing (left of Add/Update); click abandons the edit. Hidden by default.
@@ -1168,6 +1216,87 @@ local function BuildLineList(parent, yTop, accessors)
     -- (EnterEditMode temporarily re-anchors this right edge to the Cancel button while editing.)
     inputBox:SetPoint("RIGHT", addBtn, "LEFT", -10, 0)
 
+    -- Type-ahead suggestions (lists that pass `suggest`): a panel ABOVE the box, since the box sits at
+    -- the bottom of the page. Shows up to SUGGEST_MAX matches; clicking one submits it exactly as
+    -- spelled. Hides on a pick, Enter, Esc, an edit cancel, a box emptied by typing, or focus leaving
+    -- the box for anywhere but the panel (IsMouseOver, so a click on a suggestion still lands).
+    if accessors.suggest then
+        local SUGGEST_MAX, SUGGEST_ROW_H = 8, 22
+        suggestPanel = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+        suggestPanel:SetPoint("BOTTOMLEFT",  inputBox, "TOPLEFT",  0, 2)
+        suggestPanel:SetPoint("BOTTOMRIGHT", addBtn,   "TOPRIGHT", 0, 2)
+        suggestPanel:SetFrameStrata("FULLSCREEN_DIALOG")
+        ApplyFlat(suggestPanel, THEME.panel, true)
+        suggestPanel:Hide()
+
+        local suggestRows = {}
+        for i = 1, SUGGEST_MAX do
+            local r = CreateFrame("Button", nil, suggestPanel)
+            r:SetHeight(SUGGEST_ROW_H)
+            r:SetPoint("TOPLEFT",  suggestPanel, "TOPLEFT",   2, -2 - (i - 1) * SUGGEST_ROW_H)
+            r:SetPoint("TOPRIGHT", suggestPanel, "TOPRIGHT", -2, -2 - (i - 1) * SUGGEST_ROW_H)
+            local hl = r:CreateTexture(nil, "HIGHLIGHT")
+            hl:SetAllPoints()
+            AccentFill(hl, 0.20)
+            local icon = r:CreateTexture(nil, "ARTWORK")
+            icon:SetSize(SUGGEST_ROW_H - 6, SUGGEST_ROW_H - 6)
+            icon:SetPoint("LEFT", r, "LEFT", 4, 0)
+            icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+            -- Where it comes from (Spell / Pet / Gear / Bag / Type), dim on the right.
+            local source = r:CreateFontString(nil, "OVERLAY")
+            ApplyFont(source, "caption")
+            source:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+            source:SetPoint("RIGHT", r, "RIGHT", -6, 0)
+            local name = r:CreateFontString(nil, "OVERLAY")
+            ApplyFont(name, "body")
+            name:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+            name:SetPoint("LEFT",  icon,   "RIGHT", 6,  0)
+            name:SetPoint("RIGHT", source, "LEFT",  -6, 0)
+            name:SetJustifyH("LEFT")
+            name:SetWordWrap(false)
+            r.icon, r.name, r.source = icon, name, source
+            r:SetScript("OnEnter", function(self)
+                self.name:SetTextColor(THEME.accent[1], THEME.accent[2], THEME.accent[3])
+            end)
+            r:SetScript("OnLeave", function(self)
+                self.name:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+            end)
+            r:SetScript("OnClick", function(self)
+                inputBox:SetText(self.value)
+                Submit()
+                inputBox:ClearFocus()
+            end)
+            r:Hide()
+            suggestRows[i] = r
+        end
+
+        local function UpdateSuggestions()
+            local matches = accessors.suggest(inputBox:GetText()) or {}
+            local n = math.min(#matches, SUGGEST_MAX)
+            for i, r in ipairs(suggestRows) do
+                local m = matches[i]
+                if i <= n then
+                    r.value = m.name
+                    r.icon:SetTexture(m.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+                    r.name:SetText(m.name)
+                    r.source:SetText(m.source or "")
+                    r:Show()
+                else
+                    r:Hide()
+                end
+            end
+            suggestPanel:SetHeight(n * SUGGEST_ROW_H + 4)
+            suggestPanel:SetShown(n > 0)
+        end
+        inputBox:HookScript("OnTextChanged", function(_, userInput)
+            if userInput then UpdateSuggestions() end   -- typing only, not our own SetText calls
+        end)
+        inputBox:HookScript("OnEditFocusLost", function()
+            if not suggestPanel:IsMouseOver() then suggestPanel:Hide() end
+        end)
+    end
+    if accessors.onFocus then inputBox:HookScript("OnEditFocusGained", function() accessors.onFocus() end) end
+
     -- Raid-marker quick-insert row above the input box: clicking drops its {token} at the cursor
     -- (focus first, preserving cursor for a mid-line insert). The box keeps raw {token} text; the
     -- list preview and chat render the icon (RenderIconTokens).
@@ -1175,7 +1304,7 @@ local function BuildLineList(parent, yTop, accessors)
     for i, spec in ipairs(quickInsert and RAID_ICON_ORDER or {}) do
         local ib = MakeRaidIconButton(parent, spec.n, spec.token)
         ib:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT",
-            CONTENT_L + (i - 1) * (ICON_BTN_SIZE + 4), 70)
+            CONTENT_L + (i - 1) * (ICON_BTN_SIZE + 4), BASE + 46)
         ib:SetScript("OnClick", function()
             if not inputBox:HasFocus() then inputBox:SetFocus() end
             inputBox:Insert(spec.token)
@@ -1196,11 +1325,13 @@ local function BuildLineList(parent, yTop, accessors)
         lastQuick = pb
     end
 
-    -- Single feature-specific help line pinned to the bottom.
-    local h1 = parent:CreateFontString(nil, "OVERLAY")
-    ApplyFont(h1, "caption")
-    h1:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", CONTENT_L, 14)
-    h1:SetText(accessors.help1 or "")
+    -- Single feature-specific help line pinned to the bottom (none for a list that passes no help1).
+    if accessors.help1 then
+        local h1 = parent:CreateFontString(nil, "OVERLAY")
+        ApplyFont(h1, "caption")
+        h1:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", CONTENT_L, 14)
+        h1:SetText(accessors.help1)
+    end
 
     return Refresh
 end
@@ -2064,7 +2195,7 @@ end
 -- Settings for the Cooldowns HUD (the frame itself is built near the end of the file). Header toggle
 -- drives trackerEnabled. The HUD lists every cooldown the player has running, found automatically by
 -- the core's scan, so instead of a list of tracked spells this page carries the opposite: an EXCLUDE
--- list, plus a minimum length. Group soulstones have their own Soulstone HUD, set up on the
+-- list. Group soulstones have their own Soulstone HUD, set up on the
 -- Announcements > Soulstone tab.
 --
 -- History: this was its own "Cooldowns" page until v0.29, then the top half of the Soulstone page,
@@ -2154,59 +2285,68 @@ do
 
     Rule(-158)
 
-    -- ── Filters ──
-    Heading("Filters", -174)
-
-    -- Minimum length, in whole seconds (0 = show everything above the global cooldown).
-    local minLabel = cd:CreateFontString(nil, "OVERLAY")
-    ApplyFont(minLabel, "body")
-    minLabel:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-    minLabel:SetPoint("TOPLEFT", cd, "TOPLEFT", PAD_L, -200)
-    minLabel:SetText("Hide cooldowns shorter than")
-
-    local minBox = MakeFlatEditBox(cd)
-    minBox:SetSize(48, 22)
-    minBox:SetPoint("LEFT", minLabel, "RIGHT", 8, 0)
-    minBox:SetJustifyH("CENTER")
-    minBox:SetNumeric(true)
-    minBox:SetMaxLetters(4)
-
-    local minUnit = cd:CreateFontString(nil, "OVERLAY")
-    ApplyFont(minUnit, "body")
-    minUnit:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-    minUnit:SetPoint("LEFT", minBox, "RIGHT", 8, 0)
-    minUnit:SetText("seconds")
-
-    local function RefreshMinBox() minBox:SetText(tostring(WQ.GetCooldownsMinDuration())) end
-    local function CommitMin()
-        local v = tonumber(minBox:GetText())
-        if v then WQ.SetCooldownsMinDuration(v) end
-        RefreshMinBox()   -- reflect the stored (clamped) value
-    end
-    minBox:SetScript("OnEnterPressed", function(self) CommitMin(); self:ClearFocus() end)
-    minBox:SetScript("OnEscapePressed", function(self) RefreshMinBox(); self:ClearFocus() end)
-    minBox:HookScript("OnEditFocusLost", function() CommitMin() end)   -- commit on blur (Hook keeps the border-reset)
-    pageSyncers[#pageSyncers + 1] = RefreshMinBox
+    -- ── Exclusions ──
+    -- (A "Hide cooldowns shorter than N seconds" box sat here until 2026-10-16; removed, user call.)
+    Heading("Exclusions", -174)
 
     -- Exclude list: the shared line-list widget, minus its chat-line extras (no raid markers or
     -- placeholders). Names are matched case-insensitively and cover every rank.
-    Caption("Never show these. Type the name as it appears in your spellbook, gear or bags; every " ..
-            "rank is covered.", -232)
-    local refreshExcludes = BuildLineList(cd, -266, {
+    -- PICK, DON'T TYPE (user call, 2026-10-16): typing searches everything this character could have on
+    -- the HUD (WQ.GetCooldownCandidates) and offers the exact names, each row shows its icon, and a
+    -- name that matches nothing reads "(not found)". Typed text is still accepted, since the candidates
+    -- only cover what the character has right now. The candidates are rebuilt on page show and when the
+    -- box gains focus (a demon summoned or a potion looted since), never per keystroke.
+    local candidates, candidateByName = {}, {}
+    local function RefreshCandidates()
+        candidates = (WQ.GetCooldownCandidates and WQ.GetCooldownCandidates()) or {}
+        wipe(candidateByName)
+        for _, c in ipairs(candidates) do candidateByName[c.name:lower()] = c end
+    end
+    -- Matches for the typed text: names STARTING with it first, then names containing it, skipping
+    -- anything already excluded. Plain find, so a "(" or "%" in the text is not a pattern.
+    local function SuggestExcludes(text)
+        local q = (text or ""):match("^%s*(.-)%s*$"):lower()
+        if q == "" then return {} end
+        local listed, p = {}, WQ.ActiveProfile()
+        for _, n in ipairs(p and p.cooldownExcludes or {}) do listed[n:lower()] = true end
+        local starts, contains = {}, {}
+        for _, c in ipairs(candidates) do
+            local n = c.name:lower()
+            local at = not listed[n] and n:find(q, 1, true)
+            if at == 1 then starts[#starts + 1] = c elseif at then contains[#contains + 1] = c end
+        end
+        for _, c in ipairs(contains) do starts[#starts + 1] = c end
+        return starts
+    end
+
+    -- User wording. Up to ~4 lines at the minimum window width, hence the gap before the list.
+    Caption("Never show these in the cooldowns HUD. Shows everything this character has available " ..
+            "(pets need to be out to see their cooldowns)\n" ..
+            "HUD actions: CTRL + Left Click announces it, CTRL + Right Click auto excludes it", -196)
+    local refreshExcludes = BuildLineList(cd, -258, {
         get    = function() local p = WQ.ActiveProfile(); return p and p.cooldownExcludes end,
         add    = function(text) return WQ.AddCooldownExclude(text) end,
-        update = function(idx, text) return WQ.UpdateCooldownExclude(idx, text) end,
+        -- No `update`, so no Edit button (user call, 2026-10-16): delete it and add the right one.
         delete = function(idx) WQ.DeleteCooldownExclude(idx) end,
+        rowInfo = function(text)
+            local c = candidateByName[text:lower()]
+            return c and c.icon, c ~= nil
+        end,
+        suggest = SuggestExcludes,
+        onFocus = RefreshCandidates,
         quickInsert = false,
         addLabel    = "Exclude",
-        updateLabel = "Update",
         emptyText   = "Nothing excluded yet...",
-        help1  = "|cff8788eeNot case-sensitive. CTRL + Click a HUD row to announce it to your group.|r",
+        placeholder = "Type here...",
     })
+    -- The HUD's CTRL+right-click adds an exclusion; repaint the list if this page is the one showing.
+    function WQ.RefreshCooldownExcludeList()
+        if cd:IsVisible() then refreshExcludes() end
+    end
 
     -- Re-sync the checkboxes. Kept under its old name because the HUD's X button and visibility pass
     -- call it to keep "Show HUD" in step. Checkboxes ONLY: it runs on roster and zone changes too, and
-    -- re-syncing the minimum box from there would wipe a value mid-type.
+    -- the opacity row re-synced from there could fight a value mid-type.
     function WQ.SyncCooldownsPage()
         for _, sync in ipairs(checkSyncers) do sync() end
     end
@@ -2214,6 +2354,7 @@ do
     cd.OnPageShow = function()   -- header toggle synced by ShowPage
         WQ.SyncCooldownsPage()
         for _, sync in ipairs(pageSyncers) do sync() end
+        RefreshCandidates()   -- before the list, whose icons and "(not found)" notes read it
         refreshExcludes()
     end
 end
@@ -3365,8 +3506,24 @@ do
         -- Side padding inside each row (user call: the icon and timer sat tight against the edges).
         -- The name text is anchored between the icon and the timer, so it follows them in.
         local ROW_PAD_X = 6
+        -- CTRL+RIGHT-CLICK A ROW TO EXCLUDE IT (user call, 2026-10-16): the usual reason to exclude
+        -- something is that it just turned up here. Immediate, no confirmation box (user call); CTRL like
+        -- the announce, so a stray click does nothing. A chat line confirms it, since the row just
+        -- vanishes otherwise. Undo it with the X on the Cooldowns page's list.
+        local function ExcludeOwn(name)
+            if not WQ.AddCooldownExclude(name) then return end
+            print(("|cff9900ffWarlockQol|r: %s has been excluded from the cooldowns HUD"):format(name))
+            if WQ.RefreshCooldownExcludeList then WQ.RefreshCooldownExcludeList() end
+        end
+        local function OnOwnRowClick(self, button)
+            if not self.rowName or self.rowName == "" or not IsControlKeyDown() then return end
+            if button == "RightButton" then ExcludeOwn(self.rowName) else AnnounceOwn(self.rowName) end
+        end
+
         local function MakeOwnRow()
-            local row = shell.MakeRow(AnnounceOwn)
+            local row = shell.MakeRow()
+            row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+            row:SetScript("OnClick", OnOwnRowClick)   -- replaces the shell's CTRL+Click-only handler
             local bg = row:CreateTexture(nil, "BACKGROUND")
             bg:SetAllPoints(row)
             bg:SetColorTexture(0, 0, 0, ROW_BG_ALPHA)
