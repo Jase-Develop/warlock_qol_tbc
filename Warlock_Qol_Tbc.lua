@@ -1590,12 +1590,15 @@ end
 -- the 19 equipment slots, read each one's cooldown, and keep whatever is still counting down.
 --
 -- SOURCES ARE AN ALLOW-LIST, NOT A BLOCK-LIST (user call, 2026-10-11): the spellbook, what you are
--- WEARING (trinkets, neck, engineering gloves...), and from the bags ONLY items whose item class is
--- CONSUMABLE (potions, healthstones, explosives; food, elixirs and flasks are consumables too but have
--- no cooldown, so they never show). Everything else in the bags is out by its class, with no per-item
--- lists: the Hearthstone and mount items are class Miscellaneous. The first version scanned every bag
--- item and then had to block noise one item at a time (a seeded Hearthstone exclusion, a mount-item
--- check); a class allow-list replaced all of that.
+-- WEARING (trinkets, neck, engineering gloves...), and from the bags ONLY items with a use effect whose
+-- item class is CONSUMABLE (potions, healthstones; food, elixirs and flasks are consumables too but have
+-- no cooldown, so they never show) or TRADE GOODS. Trade Goods was added 2026-10-17 after an in-game
+-- dump showed Dark Rune is class 7 / subclass Other, not a Consumable, so it never showed; the classic
+-- item data files explosives and engineering devices (Goblin Jumper Cables) there too. Cloth, ore and
+-- herbs are Trade Goods with no use effect, so they are out. Everything else in the bags is out by its
+-- class, with no per-item lists: the Hearthstone and mount items are class Miscellaneous. The first
+-- version scanned every bag item and then had to block noise one item at a time (a seeded Hearthstone
+-- exclusion, a mount-item check); a class allow-list replaced all of that.
 -- The user narrows it with an EXCLUDE list (by name, so every rank goes at once). Because the
 -- numbers come from the client they are exact, already include any
 -- talent that shortens a cooldown, and survive /reload with no persistence of our own.
@@ -1627,6 +1630,7 @@ local OwnCd = {
     book    = {},      -- { slot, pet, name, icon } per castable spellbook slot
     items   = {},      -- itemID -> { name, icon, subType } per bag CONSUMABLE seen this session; false = not one
     useSpell = {},     -- use-effect spellID -> itemID, so a cast says which consumable was used
+    waiting = 0,       -- bag consumables still waiting on the item cache after the last pass
     bookApi = "none",  -- which spellbook accessor resolved (DebugDumpOwnCooldowns prints it)
     cdApi   = "none",  -- which spell-cooldown accessor resolved (likewise)
 }
@@ -1636,7 +1640,6 @@ do
 
     local ownDirty  = true   -- a cooldown event arrived since the last scan
     local bookDirty = true   -- the spellbook (or pet) changed: rebuild OwnCd.book
-    local bagsDirty = true   -- bag contents changed: look for new consumables
 
     -- ── Spellbook shims ──
     -- The modern C_SpellBook namespace (tables, an Enum bank) is preferred when present, else the older
@@ -1772,9 +1775,17 @@ do
     -- reads the cooldowns of the handful of consumable IDs already found.
     -- Found items are kept for the session, so the last potion or healthstone you used keeps counting
     -- down after it leaves your bags.
+    -- Discovery runs straight from the bag event, NOT from the HUD's tick (in-game fix, 2026-10-17), so
+    -- an item that arrives and is used up while the HUD is hidden is still known when it next shows.
+    -- An item the client has not cached yet (a fresh loot drop, an auction or bank haul) is retried on a
+    -- short timer until it loads, rather than on the next bag change: a lone Dark Rune was looted,
+    -- skipped as uncached, and the next bag change was the rune being used, so it never showed.
     local CONSUMABLE_CLASS = (Enum and Enum.ItemClass and Enum.ItemClass.Consumable) or 0
+    local TRADEGOODS_CLASS = (Enum and Enum.ItemClass and Enum.ItemClass.Tradegoods) or 7   -- Dark Rune, explosives
     -- Consumable subclass "Other" (where healthstones live): a catch-all, so never used as a row label.
     local CONSUMABLE_OTHER = (Enum and Enum.ItemConsumableSubclass and Enum.ItemConsumableSubclass.Other) or 8
+    -- Trade Goods' own "Other" (Dark Rune's), for the same reason. 11 per the in-game dump, 2026-10-17.
+    local TRADEGOODS_OTHER = 11
     local function BagSlotCount(bag)
         local fn = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
         return (fn and fn(bag)) or 0
@@ -1797,10 +1808,23 @@ do
         return fn(itemID)
     end
 
+    -- Ask the client to load an item into its cache (the next bag pass then finds its use spell).
+    local function RequestItem(id)
+        if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(id)
+        elseif GetItemInfo then GetItemInfo(id) end         -- the old way: a lookup queues the load
+    end
+    -- True once the item's full data is in the cache, so a missing use spell means it has none.
+    local function ItemCached(id)
+        if C_Item and C_Item.IsItemDataCachedByID then return C_Item.IsItemDataCachedByID(id) end
+        return GetItemInfo ~= nil and GetItemInfo(id) ~= nil
+    end
+
     -- Classify a bag item once per session. GetItemInfoInstant needs no item cache, so the class check
     -- never has to wait. The soulstone item is skipped even if it is a consumable: it has its own HUD.
-    -- Its use-spell name DOES need the cache, so an uncached consumable is left unrecorded and retried on
-    -- the next bag pass rather than risking a soulstone slipping through.
+    -- Its use-spell name DOES need the cache, so an uncached item is left unrecorded, its load is
+    -- requested, and it returns true so the caller retries shortly, rather than risking a soulstone
+    -- slipping through. A CACHED item with no use spell has no use effect at all (cloth, ore) and is
+    -- marked out for good; without that check every stack of Trade Goods would be retried forever.
     local function NoteBagItem(link)
         if not link then return end
         local id = tonumber(link:match("item:(%d+)"))
@@ -1808,12 +1832,16 @@ do
         local getInfo = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
         if not getInfo then return end
         local _, _, subType, _, icon, classID, subClassID = getInfo(id)
-        if classID ~= CONSUMABLE_CLASS then OwnCd.items[id] = false; return end
+        if classID ~= CONSUMABLE_CLASS and classID ~= TRADEGOODS_CLASS then OwnCd.items[id] = false; return end
         local use, useID = ItemUseSpell(id)
-        if not use then return end                          -- not cached yet: retry next bag pass
+        if not use then
+            if ItemCached(id) then OwnCd.items[id] = false; return end   -- no use effect: never a cooldown
+            RequestItem(id); return true                    -- not cached yet: retried shortly
+        end
         if use == SOULSTONE_SPELL_NAME then OwnCd.items[id] = false; return end
         local name = link:match("%[(.-)%]")
-        if subClassID == CONSUMABLE_OTHER then subType = nil end
+        if (classID == CONSUMABLE_CLASS and subClassID == CONSUMABLE_OTHER)
+            or (classID == TRADEGOODS_CLASS and subClassID == TRADEGOODS_OTHER) then subType = nil end
         if name then
             OwnCd.items[id] = { name = name, icon = icon, subType = subType }
             if useID then OwnCd.useSpell[useID] = id end    -- so a cast of it tells us this item was used
@@ -1845,14 +1873,36 @@ do
     -- One pass over the backpack + four bags (equipped gear is read directly by slot instead). Then the
     -- items this character USED recently are added back from the saved record, so after a /reload the
     -- last healthstone you ate is still known by name even though it has left your bags.
+    -- Returns true when some consumable is still waiting on the item cache.
     local function DiscoverBagItems()
+        local waiting = 0
         for bag = 0, (NUM_BAG_SLOTS or 4) do
-            for slot = 1, BagSlotCount(bag) do NoteBagItem(BagItemLink(bag, slot)) end
+            for slot = 1, BagSlotCount(bag) do
+                if NoteBagItem(BagItemLink(bag, slot)) then waiting = waiting + 1 end
+            end
         end
         local cs = CharState()
         for id, u in pairs(cs and cs.usedItems or {}) do
             if OwnCd.items[id] == nil then OwnCd.items[id] = { name = u.name, icon = u.icon, subType = u.subType } end
         end
+        OwnCd.waiting = waiting
+        return waiting > 0
+    end
+
+    -- Discover now, then retry every BAG_RETRY_DELAY while anything is still uncached, at most
+    -- BAG_RETRY_MAX times per bag change (10s), so an item that never loads cannot keep us scanning.
+    -- Usually the cache fills within a pass or two.
+    local BAG_RETRY_DELAY, BAG_RETRY_MAX = 0.5, 20
+    local retries, retryQueued = 0, false
+    local function Discover()
+        local waiting = DiscoverBagItems()
+        ownDirty = true                                     -- read the cooldowns of anything newly found
+        if not waiting or retryQueued or retries >= BAG_RETRY_MAX then return end
+        retries, retryQueued = retries + 1, true
+        C_Timer.After(BAG_RETRY_DELAY, function()
+            retryQueued = false
+            if CooldownsActive() then Discover() end        -- switched off meanwhile: stop
+        end)
     end
 
     -- Rebuild the cached list of castable spellbook slots (player, then pet).
@@ -1878,10 +1928,11 @@ do
         return set
     end
 
-    -- Event hooks (the event frame calls these). Cheap: they only flag work for the next scan.
+    -- Event hooks (the event frame calls these). Cheap: they flag work for the next scan, except the bag
+    -- one, which discovers at once (once per bag change) so it works while the HUD is hidden.
     function OwnCd.MarkDirty()     ownDirty = true end
     function OwnCd.MarkSpellbook() ownDirty = true; bookDirty = true end
-    function OwnCd.MarkBags()      ownDirty = true; bagsDirty = true end
+    function OwnCd.MarkBags()      retries = 0; Discover() end   -- a fresh change gets a fresh retry budget
 
     -- The player finished a cast (UNIT_SPELLCAST_SUCCEEDED). When it is a bag consumable's use effect,
     -- record WHICH item was used, so its shared-cooldown row is named after it. Saved per character in
@@ -1910,8 +1961,8 @@ do
     -- One entry per name (ranks fold together, as the exclusions match by name), sorted by name.
     -- Rebuilt fresh on each call, so the page asks only on page show and when the box gains focus.
     function OwnCd.Candidates()
-        RebuildBook();      bookDirty = false
-        DiscoverBagItems(); bagsDirty = false
+        RebuildBook(); bookDirty = false
+        DiscoverBagItems()
         local list, seen = {}, {}
         local function add(name, icon, source)
             if not name or name == "" or seen[name:lower()] then return end
@@ -1940,8 +1991,7 @@ do
     function OwnCd.Scan(force, trace)
         if not (force or ownDirty) then return false end
         ownDirty = false
-        if bookDirty then RebuildBook();      bookDirty = false end
-        if bagsDirty then DiscoverBagItems(); bagsDirty = false end
+        if bookDirty then RebuildBook(); bookDirty = false end
 
         local now, excluded = GetTime(), ExcludeSet()
         local found = {}   -- name -> { expires, icon, kind, start, duration }
@@ -2557,7 +2607,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         OwnCd.MarkDirty()       -- a different trinket (etc.) is in a slot: re-read the equipped cooldowns
 
     elseif event == "BAG_UPDATE_DELAYED" then
-        OwnCd.MarkBags()        -- bags settled: look for new consumables before one gets used up
+        OwnCd.MarkBags()        -- bags settled: find new consumables now, before one gets used up
 
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         local unit, _, spellID = ...
@@ -3028,6 +3078,9 @@ function WQ.DebugDumpOwnCooldowns()
     local spells = 0
     for _ in pairs(OwnCd.useSpell) do spells = spells + 1 end
     print(("  %d bag consumables have a use spell ID (a use can only be recognised for these)"):format(spells))
+    if OwnCd.waiting > 0 then
+        print(("  %d bag consumables still waiting on the item cache (retried every 0.5s, up to 10s)"):format(OwnCd.waiting))
+    end
     local cs = CharState()
     for _, u in pairs(cs and cs.usedItems or {}) do
         print(("  last used: %s, %ds ago"):format(u.name or "?", time() - (u.at or 0)))
