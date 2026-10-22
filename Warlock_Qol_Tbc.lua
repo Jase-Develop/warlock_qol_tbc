@@ -1818,6 +1818,16 @@ do
         if C_Item and C_Item.IsItemDataCachedByID then return C_Item.IsItemDataCachedByID(id) end
         return GetItemInfo ~= nil and GetItemInfo(id) ~= nil
     end
+    -- An item's name, or nil until it has loaded. Read from the item cache first: the bag link's
+    -- [bracket] text is "[]" for an item the client has not loaded yet, and the use spell can resolve
+    -- before the name does (in-game bug, 2026-10-18: a Dark Rune row with no text, and blank names
+    -- saved as "last used").
+    local function ItemName(id, link)
+        local name = (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(id))
+                  or (GetItemInfo and GetItemInfo(id))
+                  or (link and link:match("%[(.-)%]"))
+        if name and name ~= "" then return name end
+    end
 
     -- Classify a bag item once per session. GetItemInfoInstant needs no item cache, so the class check
     -- never has to wait. The soulstone item is skipped even if it is a consumable: it has its own HUD.
@@ -1839,13 +1849,12 @@ do
             RequestItem(id); return true                    -- not cached yet: retried shortly
         end
         if use == SOULSTONE_SPELL_NAME then OwnCd.items[id] = false; return end
-        local name = link:match("%[(.-)%]")
+        local name = ItemName(id, link)
+        if not name then RequestItem(id); return true end   -- name not loaded yet: retried shortly
         if (classID == CONSUMABLE_CLASS and subClassID == CONSUMABLE_OTHER)
             or (classID == TRADEGOODS_CLASS and subClassID == TRADEGOODS_OTHER) then subType = nil end
-        if name then
-            OwnCd.items[id] = { name = name, icon = icon, subType = subType }
-            if useID then OwnCd.useSpell[useID] = id end    -- so a cast of it tells us this item was used
-        end
+        OwnCd.items[id] = { name = name, icon = icon, subType = subType }
+        if useID then OwnCd.useSpell[useID] = id end        -- so a cast of it tells us this item was used
     end
 
     -- FALLBACK LABEL ONLY, for a shared cooldown whose use we never saw (see the bag section of Scan).
@@ -1883,7 +1892,11 @@ do
         end
         local cs = CharState()
         for id, u in pairs(cs and cs.usedItems or {}) do
-            if OwnCd.items[id] == nil then OwnCd.items[id] = { name = u.name, icon = u.icon, subType = u.subType } end
+            if not u.name or u.name == "" then
+                cs.usedItems[id] = nil                      -- saved blank by the "[]" link bug; useless
+            elseif OwnCd.items[id] == nil then
+                OwnCd.items[id] = { name = u.name, icon = u.icon, subType = u.subType }
+            end
         end
         OwnCd.waiting = waiting
         return waiting > 0
