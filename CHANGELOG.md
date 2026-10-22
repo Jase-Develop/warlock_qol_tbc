@@ -2,7 +2,7 @@
 
 All notable player-facing changes are listed here, newest first.
 
-### [0.33] - 2026-10-11
+### [0.33] - 2026-10-22
 
 Two HUDs instead of one, and a tidier menu. The Cooldowns HUD now follows every cooldown you have, and
 soulstones get a HUD of their own.
